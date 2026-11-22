@@ -221,3 +221,16 @@ python manifest_downloader.py manifest.json --output downloads --cookies cookies
 The downloader creates destination directories, skips existing non-empty files (or verifies them first when SHA-256 is supplied), retries failed transfers, and records failures in `failed-downloads.json`. It exits with status 1 if any entry fails. Downloads first write to a temporary `.download` file and replace the destination only after successful completion and optional checksum verification.
 
 Manifest paths must be relative to the output root. Absolute paths, parent traversal (`..`), repeated separators, duplicate destinations (case-insensitive), and symlinks within the output path are rejected. Keep the cookie file outside version control. This command assumes Python 3.9 or newer and a working yt-dlp installation; no tests have been run for this new entry point yet.
+
+### Migrating the original course list
+
+The legacy `auto_downloader.py` contains an existing `COURSE_STRUCTURE` mapping. Export it once to a manifest without running downloads or executing the source file:
+
+```bash
+python export_legacy_manifest.py --source auto_downloader.py --output manifest.json
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt
+```
+
+The exporter preserves the original directory names, filenames, and Drive file IDs, and refuses to overwrite an existing `manifest.json`. The generated JSON is a regular editable file: remove entries, add entries, or attach a trusted `sha256` field to individual files before downloading. Importing requires a literal `COURSE_STRUCTURE` dictionary; dynamically calculated structures are deliberately unsupported. Neither the exporter nor the manifest contains cookie credentials. Because a manifest includes Drive file IDs and potentially descriptive filenames, review it before publishing it.
+
+These additions are separate from the legacy script and do not modify its behavior.
