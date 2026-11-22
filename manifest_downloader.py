@@ -149,6 +149,24 @@ def load_manifest(path: Path):
     return result
 
 
+def portable_path_parts(path: Path):
+    """Canonicalize absolute path components for portable collision checks.
+
+    This deliberately compares case-insensitively on all platforms, so a
+    manifest that is safe on Linux will also be safe on default macOS/Windows
+    filesystems.  Lexical normalization does not follow filesystem symlinks.
+    """
+    normalized = Path(os.path.abspath(path))
+    return tuple(unicodedata.normalize("NFC", part).casefold() for part in normalized.parts)
+
+
+def portable_paths_overlap(left: Path, right: Path) -> bool:
+    """Return true for same-file or file/directory ancestor collisions."""
+    a = portable_path_parts(left)
+    b = portable_path_parts(right)
+    return a[:len(b)] == b or b[:len(a)] == a
+
+
 def validate_control_collisions(root: Path, entries, control_paths):
     """Protect inputs and metadata from the entire manifest, not just this batch.
 
@@ -167,14 +185,14 @@ def validate_control_collisions(root: Path, entries, control_paths):
 
     controls = [(label, path) for label, path in control_paths if path is not None]
     for label, path in controls:
-        if path == root:
+        if portable_path_parts(path) == portable_path_parts(root):
             raise ValueError(f"{label} may not be the output directory")
         for artifact, description in artifacts:
-            if path == artifact or path in artifact.parents or artifact in path.parents:
+            if portable_paths_overlap(path, artifact):
                 raise ValueError(f"{label} {path} conflicts with {description} {artifact}")
     for index, (label, path) in enumerate(controls):
         for other_label, other_path in controls[index + 1:]:
-            if path == other_path or path in other_path.parents or other_path in path.parents:
+            if portable_paths_overlap(path, other_path):
                 raise ValueError(f"{label} {path} conflicts with {other_label} {other_path}")
 
 
