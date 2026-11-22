@@ -218,6 +218,23 @@ def append_progress(path: Path, event: dict):
         stream.flush()
 
 
+def discard_oversized_partial(temporary: Path, partial: Path, expected_size, max_size):
+    """Reject impossible resumptions before they consume more transfer bandwidth."""
+    if not partial.is_file():
+        return None
+    actual = partial.stat().st_size
+    if expected_size is not None and actual > expected_size:
+        error = f"partial download exceeds manifest size_bytes ({actual} > {expected_size})"
+    elif max_size is not None and actual > max_size:
+        error = f"partial download exceeds --max-file-mib ({actual} > {max_size})"
+    else:
+        return None
+    # Only remove source-scoped temporary artifacts, never the destination.
+    temporary.unlink(missing_ok=True)
+    partial.unlink(missing_ok=True)
+    return error
+
+
 def retry_delay(backoff: float, attempt: int, maximum: float) -> float:
     """Bound exponential retry waits, including jitter, without overflow."""
     if backoff == 0:
@@ -536,6 +553,11 @@ def main(argv=None):
                     success = False
                     error = "download failed"
                     for attempt in range(args.retries):
+                        error = discard_oversized_partial(
+                            temporary, partial, size_bytes, max_file_bytes
+                        )
+                        if error is not None:
+                            break
                         # yt-dlp can resume .part across attempts and subsequent invocations.
                         # A completed source-specific .download left by interruption can
                         # be reused, after checking the optional manifest digest.
@@ -593,6 +615,12 @@ def main(argv=None):
                             if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                                 raise ValueError("Symlink introduced during download")
                             temporary.unlink(missing_ok=True)
+                            oversized = discard_oversized_partial(
+                                temporary, partial, size_bytes, max_file_bytes
+                            )
+                            if oversized is not None:
+                                error = oversized
+                                break
                             if attempt + 1 < args.retries:
                                 time.sleep(retry_delay(args.backoff, attempt, args.max_backoff))
                             continue
