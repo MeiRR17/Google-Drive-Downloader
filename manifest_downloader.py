@@ -196,7 +196,7 @@ def download_lock(root: Path):
     identity = os.fstat(descriptor)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(f"pid={os.getpid()}\\n")
+            stream.write(f"pid={os.getpid()}\n")
             stream.flush()
         yield
     finally:
