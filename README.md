@@ -709,3 +709,11 @@ The summary is distinct from `--failed-report`, which remains the authoritative 
 
 The summary is written with atomic replacement and respects the same non-regular-file, symlink and namespace-collision safeguards as failure reports. Add `--durable-reports` to request file and, on POSIX, directory synchronization for the summary as well. `--summary-json` is available for download runs only, not `--dry-run` or `--verify-only`. A fatal startup error or a failure writing the recovery report can prevent the summary from being written; consumers should check for file presence and the actual process exit code rather than assuming a summary always exists.
 
+### Validate the complete output directory ancestry
+
+Destination safety checks now inspect **every existing component of the output directory's parent chain**, not only the output directory itself. Components that are symbolic links, non-directories, or Windows directory junctions (where Python exposes `Path.is_junction`) are rejected. The downloader also requires each existing intermediate destination component to be an ordinary directory and each existing final destination to be an ordinary file.
+
+The output root is checked before and after directory creation, and destination paths are rechecked during downloads. The same parent-directory validation applies to the failure report, batch summary and progress journal. This prevents a pre-existing symlink above the output root from silently redirecting writes outside the intended directory and avoids proceeding into unexpected filesystem objects.
+
+The checks are intentionally conservative: a path under a benign system symlink (such as `/tmp` or `/var` on some macOS systems) can be rejected. In that case, provide a canonical real directory path for `--output` and metadata output paths instead. These checks are not atomic against an untrusted process concurrently replacing directory components; use a trusted directory with appropriate permissions.
+
