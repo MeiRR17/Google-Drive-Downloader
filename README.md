@@ -323,3 +323,14 @@ python manifest_downloader.py manifest.json --include '02-Python/*' --offset 10 
 ```
 
 `--offset` accepts zero or a positive integer. Keep the manifest and filters unchanged between successive batches to avoid gaps or repeated selections. A batch beyond the final matching entry selects no files. Existing file skipping still applies; `--force` is required to replace already-downloaded destinations. Use `--progress-log` when a durable per-file audit trail is needed.
+
+### Bound stalled download attempts
+
+Add `--file-timeout SECONDS` to set a wall-clock deadline for each individual yt-dlp subprocess attempt:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --file-timeout 900 --retries 3 --backoff 2 --progress-log download-progress.jsonl
+```
+
+The example limits each attempt to 15 minutes; it does **not** impose a 15-minute deadline on the entire batch. When an attempt times out, the downloader stops that yt-dlp subprocess and reports a timeout if all attempts fail. Resumable partial data is retained for the next attempt or invocation. The existing retry backoff applies between attempts. If omitted, `--file-timeout` preserves the previous unlimited per-attempt duration. Supply a finite positive number of seconds.
+
