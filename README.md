@@ -562,3 +562,9 @@ This example stops after three consecutive failed manifest entries. A successful
 
 The threshold applies to individual file outcomes; optional progress-log failures do not count as download failures. Unattempted entries remain marked `pending` in the failure report, and the command exits with status `1`. `--max-failures` remains available as a separate **cumulative failure limit**; whichever threshold is reached first stops the batch. Both flags require a positive integer. By default, neither limit is applied.
 
+### Oversized resumable partials
+
+Before a yt-dlp retry resumes an existing source-scoped `.download.part` file, the downloader checks its current byte count against the manifest's optional exact `size_bytes` and the configured `--max-file-mib` ceiling. A partial file already larger than either bound cannot become a valid final download by adding more data. In this case, the downloader removes its source-scoped `.part` and associated staged `.download` artifact, records a file failure, and moves on instead of repeatedly resuming it.
+
+This limit check also runs after a timed-out yt-dlp attempt, including the final attempt, so an over-limit partial is not left behind for the next invocation. When the partial is within the applicable limits, the existing resume behavior is unchanged. A completed destination is never deleted by this cleanup. Without a manifest size or `--max-file-mib`, no such numeric partial-size bound exists.
+
