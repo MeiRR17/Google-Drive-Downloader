@@ -153,6 +153,8 @@ def main(argv=None):
                         help="Append a JSONL record after each download, skip or failure")
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--backoff", type=float, default=2.0)
+    parser.add_argument("--file-timeout", type=float, metavar="SECONDS",
+                        help="Maximum wall-clock seconds per yt-dlp attempt")
     parser.add_argument("--only-failed", type=Path, metavar="REPORT",
                         help="Retry only entries listed in a previous failure report")
     parser.add_argument("--dry-run", action="store_true",
@@ -176,6 +178,8 @@ def main(argv=None):
         parser.error("--limit must be >= 1")
     if args.offset < 0:
         parser.error("--offset must be >= 0")
+    if args.file_timeout is not None and not (0 < args.file_timeout < float("inf")):
+        parser.error("--file-timeout must be a finite positive number")
     if args.verify_only and args.force:
         parser.error("--verify-only cannot be combined with --force")
     if args.verify_only and args.dry_run:
@@ -292,7 +296,20 @@ def main(argv=None):
                     "--format", "best[ext=mp4]/best", "-o", str(temporary),
                     f"https://drive.google.com/file/d/{file_id}/view",
                 ]
-                result = subprocess.run(command, check=False)
+                try:
+                    result = subprocess.run(
+                        command, check=False, timeout=args.file_timeout
+                    )
+                except subprocess.TimeoutExpired:
+                    # subprocess.run terminates the timed-out yt-dlp process.
+                    # Retain its .part file so the next attempt can continue.
+                    error = f"yt-dlp timed out after {args.file_timeout:g} seconds"
+                    if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
+                        raise ValueError("Symlink introduced during download")
+                    temporary.unlink(missing_ok=True)
+                    if attempt + 1 < args.retries:
+                        time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
+                    continue
                 if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                     raise ValueError("Symlink introduced during download")
                 if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size > 0:
