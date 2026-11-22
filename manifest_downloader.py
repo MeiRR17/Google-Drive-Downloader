@@ -17,7 +17,7 @@ SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 
 
 def safe_destination(root: Path, relative: str) -> Path:
-    if not isinstance(relative, str) or not relative or "\\ " in relative:
+    if not isinstance(relative, str) or not relative:
         raise ValueError("Invalid destination path")
     # Treat backslashes as separators on every platform.
     normalized = relative.replace("\\", "/")
