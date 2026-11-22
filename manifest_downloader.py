@@ -87,18 +87,23 @@ def load_manifest(path: Path):
             raise ValueError(f"Entry {index}: expected object")
         file_id, name = entry.get("id"), entry.get("path")
         checksum = entry.get("sha256")
+        size_bytes = entry.get("size_bytes")
         if not isinstance(file_id, str) or not FILE_ID.fullmatch(file_id):
             raise ValueError(f"Entry {index}: invalid Drive file ID")
         if not isinstance(name, str):
             raise ValueError(f"Entry {index}: path must be a string")
         if checksum is not None and (not isinstance(checksum, str) or not SHA256.fullmatch(checksum)):
             raise ValueError(f"Entry {index}: invalid SHA-256")
+        if size_bytes is not None and (
+            type(size_bytes) is not int or size_bytes < 1
+        ):
+            raise ValueError(f"Entry {index}: size_bytes must be a positive integer")
         normalized = validate_relative_path(name)
         key = unicodedata.normalize("NFC", normalized).casefold()
         if key in destinations:
             raise ValueError(f"Entry {index}: duplicate destination {name!r}")
         destinations.add(key)
-        result.append((file_id, name, checksum.lower() if checksum else None))
+        result.append((file_id, name, checksum.lower() if checksum else None, size_bytes))
     return result
 
 
@@ -107,7 +112,7 @@ def failed_entries(report_path: Path, entries):
     data = json.loads(report_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("failed"), list):
         raise ValueError("Failure report must contain a failed array")
-    known = {(file_id, path) for file_id, path, _ in entries}
+    known = {(file_id, path) for file_id, path, _, _ in entries}
     selected = set()
     for index, item in enumerate(data["failed"], 1):
         if not isinstance(item, dict):
@@ -281,7 +286,7 @@ def main(argv=None):
         entries = select_entries(entries, args.include, args.exclude, args.limit, args.offset)
         # Validate every destination before writing anything.
         root = args.output.absolute()
-        destinations = [safe_destination(root, name) for _, name, _ in entries]
+        destinations = [safe_destination(root, name) for _, name, _, _ in entries]
         report_path = args.failed_report.absolute()
         progress_path = args.progress_log.absolute() if args.progress_log else None
         if (report_path == root or report_path in destinations
@@ -299,11 +304,11 @@ def main(argv=None):
             raise ValueError("Use a different --failed-report when retrying failures")
         staging_paths = {
             temporary_paths(target, file_id)[0]
-            for (file_id, _, _), target in zip(entries, destinations)
+            for (file_id, _, _, _), target in zip(entries, destinations)
         }
         part_paths = {
             temporary_paths(target, file_id)[1]
-            for (file_id, _, _), target in zip(entries, destinations)
+            for (file_id, _, _, _), target in zip(entries, destinations)
         }
         reserved_paths = staging_paths | part_paths
         lock_path = root / ".manifest-downloader.lock"
@@ -320,17 +325,24 @@ def main(argv=None):
         parser.error(str(exc))
 
     if args.dry_run:
-        for _, name, expected in entries:
-            print(f"PLAN {name}" + (" [SHA-256]" if expected else ""))
+        for _, name, expected, size_bytes in entries:
+            markers = []
+            if expected:
+                markers.append("SHA-256")
+            if size_bytes is not None:
+                markers.append(f"{size_bytes} bytes")
+            print(f"PLAN {name}" + (f" [{' / '.join(markers)}]" if markers else ""))
         print(f"Selected {len(entries)} entries; no files changed")
         return 0
     if args.verify_only:
         failures = []
-        for (file_id, name, expected), target in zip(entries, destinations):
+        for (file_id, name, expected, size_bytes), target in zip(entries, destinations):
             try:
                 safe_destination(root, name)
                 if not target.is_file() or target.stat().st_size == 0:
                     error = "missing or empty"
+                elif size_bytes is not None and target.stat().st_size != size_bytes:
+                    error = "size_bytes mismatch"
                 elif expected is not None and digest(target) != expected:
                     error = "SHA-256 mismatch"
                 else:
@@ -350,13 +362,13 @@ def main(argv=None):
         failures = []
         pending = {
             (file_id, name): {"id": file_id, "path": name, "error": "pending"}
-            for file_id, name, _ in entries
+            for file_id, name, _, _ in entries
         }
         if args.checkpoint:
             write_report(report_path, list(pending.values()))
         processed = 0
         stopped_early = False
-        for index, ((file_id, name, expected), target) in enumerate(zip(entries, destinations)):
+        for index, ((file_id, name, expected, size_bytes), target) in enumerate(zip(entries, destinations)):
             status = "failed"
             error = None
             try:
@@ -365,7 +377,8 @@ def main(argv=None):
                 target.parent.mkdir(parents=True, exist_ok=True)
                 safe_destination(root, name)
                 if target.is_file() and target.stat().st_size > 0 and not args.force:
-                    if expected is None or digest(target) == expected:
+                    if ((size_bytes is None or target.stat().st_size == size_bytes)
+                            and (expected is None or digest(target) == expected)):
                         print(f"SKIP {name}")
                         if progress_path is not None:
                             append_progress(progress_path, {
@@ -376,7 +389,7 @@ def main(argv=None):
                         if args.checkpoint:
                             write_report(report_path, failures + list(pending.values()))
                         continue
-                    print(f"REPLACE checksum mismatch: {name}", file=sys.stderr)
+                    print(f"REPLACE integrity mismatch: {name}", file=sys.stderr)
                 temporary, partial = temporary_paths(target, file_id)
                 if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                     raise ValueError("Symlink at target or temporary download")
@@ -399,7 +412,8 @@ def main(argv=None):
                             temporary.unlink()
                             partial.unlink(missing_ok=True)
                             break
-                        if expected is None or digest(temporary) == expected:
+                        if ((size_bytes is None or temporary.stat().st_size == size_bytes)
+                                and (expected is None or digest(temporary) == expected)):
                             if target.is_symlink():
                                 raise ValueError("Destination became symlink")
                             os.replace(temporary, target)
@@ -444,11 +458,12 @@ def main(argv=None):
                         partial.unlink(missing_ok=True)
                         break
                     if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size > 0:
-                        if expected is None or digest(temporary) == expected:
+                        if ((size_bytes is None or temporary.stat().st_size == size_bytes)
+                                and (expected is None or digest(temporary) == expected)):
                             os.replace(temporary, target)
                             success = True
                             break
-                        error = "SHA-256 mismatch"
+                        error = "size_bytes or SHA-256 mismatch"
                         temporary.unlink()
                         partial.unlink(missing_ok=True)
                     else:
