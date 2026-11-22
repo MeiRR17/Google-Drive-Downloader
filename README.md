@@ -619,3 +619,9 @@ This emits a warning about the mismatch and restricts retries to entries whose *
 
 `--reconcile-failed` must be used with `--only-failed`; it does not turn off path safety, local integrity checks or download limits. Omitting it continues to reject changed or legacy reports. When retrying, write the new failure report to a different path than the input report to preserve the original recovery record.
 
+### Portable control-file collision checks
+
+The preflight check for the **complete** manifest also compares control paths against download destinations and source-scoped staging files using Unicode NFC normalization and case-insensitive pathname components, including file/directory ancestor relationships. This matters when a manifest was created on a case-sensitive machine but later used on macOS or Windows, where names such as `downloads/Lesson.mp4` and `downloads/lesson.mp4` may identify the same file.
+
+Manifest input, authentication cookies (when enabled), retry-input reports, output failure reports, progress journals, and the downloader lock may not overlap one another or any manifest destination/staging artifact under these portable comparison rules. The comparison is conservative on case-sensitive systems: rename a conflicting manifest path or move the affected control file if preflight rejects it. Comparison uses lexically normalized absolute paths; it does not rely on filesystem symlink resolution, which is separately guarded.
+
