@@ -17,6 +17,7 @@ import time
 
 FILE_ID = re.compile(r"^[A-Za-z0-9_-]{10,128}$")
 SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
+RATE_LIMIT = re.compile(r"^[1-9][0-9]*(?:[KMG])?$", re.IGNORECASE)
 
 
 def safe_destination(root: Path, relative: str) -> Path:
@@ -174,6 +175,11 @@ def main(argv=None):
     parser.add_argument("--backoff", type=float, default=2.0)
     parser.add_argument("--file-timeout", type=float, metavar="SECONDS",
                         help="Maximum wall-clock seconds per yt-dlp attempt")
+    parser.add_argument("--limit-rate", metavar="RATE",
+                        help="Limit yt-dlp transfer speed, e.g. 500K or 2M bytes/second")
+    parser.add_argument("--sleep-between-files", type=float, default=0.0,
+                        metavar="SECONDS",
+                        help="Pause between attempted files to reduce request pressure")
     parser.add_argument("--only-failed", type=Path, metavar="REPORT",
                         help="Retry only entries listed in a previous failure report")
     parser.add_argument("--dry-run", action="store_true",
@@ -199,6 +205,10 @@ def main(argv=None):
         parser.error("--offset must be >= 0")
     if args.file_timeout is not None and not (0 < args.file_timeout < float("inf")):
         parser.error("--file-timeout must be a finite positive number")
+    if args.limit_rate is not None and not RATE_LIMIT.fullmatch(args.limit_rate):
+        parser.error("--limit-rate must be a positive integer optionally suffixed K, M or G")
+    if not (0 <= args.sleep_between_files < float("inf")):
+        parser.error("--sleep-between-files must be a finite non-negative number")
     if args.verify_only and args.force:
         parser.error("--verify-only cannot be combined with --force")
     if args.verify_only and args.dry_run:
@@ -280,7 +290,7 @@ def main(argv=None):
     }
     if args.checkpoint:
         write_report(report_path, list(pending.values()))
-    for (file_id, name, expected), target in zip(entries, destinations):
+    for index, ((file_id, name, expected), target) in enumerate(zip(entries, destinations)):
         status = "failed"
         error = None
         try:
@@ -324,8 +334,10 @@ def main(argv=None):
                     sys.executable, "-m", "yt_dlp", "--cookies", str(args.cookies),
                     "--no-playlist", "--continue", "--no-overwrites",
                     "--format", "best[ext=mp4]/best", "-o", str(temporary),
-                    f"https://drive.google.com/file/d/{file_id}/view",
                 ]
+                if args.limit_rate is not None:
+                    command.extend(["--limit-rate", args.limit_rate.upper()])
+                command.append(f"https://drive.google.com/file/d/{file_id}/view")
                 try:
                     result = subprocess.run(
                         command, check=False, timeout=args.file_timeout
@@ -375,6 +387,8 @@ def main(argv=None):
         pending.pop((file_id, name))
         if args.checkpoint:
             write_report(report_path, failures + list(pending.values()))
+        if args.sleep_between_files and index + 1 < len(entries):
+            time.sleep(args.sleep_between_files)
     if not args.checkpoint:
         write_report(report_path, failures)
     print(f"Completed: {len(entries) - len(failures)}/{len(entries)} entries successful or already present")
