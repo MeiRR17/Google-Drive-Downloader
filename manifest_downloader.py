@@ -128,7 +128,7 @@ def append_progress(path: Path, event: dict):
         **event,
     }
     with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(event, ensure_ascii=False) + "\\n")
+        stream.write(json.dumps(event, ensure_ascii=False) + "\n")
         stream.flush()
 
 
