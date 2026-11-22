@@ -498,3 +498,13 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 
 This graceful recovery also works when `--checkpoint` was not supplied. `--checkpoint` remains useful for abrupt process termination, power loss and crashes where Python cannot process Ctrl+C. The report is written after interruption is handled, so it cannot be guaranteed if the system is terminated during the report write itself. A second interrupt or uncatchable termination may also prevent graceful recovery.
 
+### Bound retry backoff
+
+The manifest downloader retries failed yt-dlp attempts with exponential backoff and a small random jitter. The new `--max-backoff` option caps each waiting period, including jitter, to prevent very large delays in long retry sequences:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --retries 8 --backoff 2 --max-backoff 30
+```
+
+Here, the maximum wait between retry attempts is 30 seconds. The default cap is 60 seconds. `--backoff` must be a finite, non-negative number; `--max-backoff` must be finite and greater than zero. A base backoff of zero still allows up to half a second of jitter, subject to the cap. The cap applies to retry waits after both yt-dlp failures and per-file timeouts; it is separate from `--sleep-between-files` and `--file-timeout`. No delay occurs after the final attempt.
+
