@@ -412,3 +412,19 @@ A normal manifest download now creates an exclusive `.manifest-downloader.lock` 
 
 If a process is killed abruptly or the machine crashes, its lock can remain. Check that no downloader process is still operating against the directory before manually deleting the stale `.manifest-downloader.lock` file. Do not remove a live lock to run two instances concurrently. The lock applies only to the new manifest downloader, not to the legacy `auto_downloader.py` script or independent programs that do not honor the lock. Dry-run and offline verification do not create a lock.
 
+### Restart corrupted or unusable partial downloads
+
+Interrupted transfers normally resume from their source-specific temporary files. If a partial file is corrupt or the remote source no longer supports resuming, restart the selected transfers from scratch without manually locating hidden staging filenames:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --only-failed failed-downloads.json --failed-report restart-results.json --restart-partials
+```
+
+`--restart-partials` discards the selected file's `.<source-token>.download` and `.<source-token>.download.part` staging files only when that file actually needs a download. It does **not** delete or replace a completed destination that would normally be skipped. To replace those existing destination files as well, use `--force`:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --include '01-Linux/*' --force
+```
+
+A forced refresh now always starts the selected transfer from scratch rather than reusing a completed or partial staging artifact from an earlier session. The previous destination remains intact unless a new download finishes and passes any configured SHA-256 check. These options do not remove other files or directories. Avoid starting a second downloader targeting the same output root while either operation is running.
+
