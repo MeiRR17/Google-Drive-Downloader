@@ -574,3 +574,11 @@ For resumed or interrupted yt-dlp transfers, the downloader checks the final des
 
 This protects against accidentally reusing or deleting unexpected filesystem objects at the staging filenames. It does not provide an atomic guarantee against another process replacing a file between validation and use; do not share the output directory with untrusted concurrent processes. Normal regular-file resumptions and existing destination files continue to be supported.
 
+### Protect manifests, cookies and reports from future batch collisions
+
+The downloader checks **all entries in the manifest**, including entries later excluded by `--include`, `--exclude`, `--offset`, `--limit`, or `--only-failed`, against input and metadata paths before processing a batch. A destination, source-scoped `.download` artifact, or `.download.part` artifact must not coincide with the manifest file, authentication cookies (when enabled), failure-report destination, progress-log destination, retry-input report, or download lock.
+
+These checks also reject file-versus-directory conflicts: for example, a manifest destination cannot be a directory that would need to contain the failure report, and the failure-report file cannot be a parent directory of a download. Metadata and input paths may not overlap each other as files or parent directories. The checks account for filenames in the **complete** manifest, rather than only the current batch, so a different filtered invocation cannot accidentally overwrite a protected file later.
+
+If the downloader reports a collision, move the control file or rename the conflicting manifest destination before rerunning. Path checks operate on absolute paths and do not replace filesystem permissions, exclusive access or atomic filesystem protections against hostile concurrent changes.
+
