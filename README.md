@@ -472,3 +472,15 @@ When `--progress-log` is enabled, each processed file normally produces a JSONL 
 
 The downloader does **not** reinterpret an otherwise successful download as a failed transfer merely because the optional journal write failed. It continues processing files and updating `--failed-report` and `--checkpoint` normally, then exits with status `1` to flag incomplete progress logging even if all files downloaded successfully. Use `--verify-only` or review destination files to establish which transfers completed; an incomplete progress journal is not an authoritative completion record.
 
+### Reserve free disk space for large transfers
+
+Use `--min-free-mib N` to require at least `N` MiB of free disk space before starting each new yt-dlp transfer:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --min-free-mib 4096 --max-failures 1 --checkpoint
+```
+
+In this example, the downloader keeps a 4 GiB pre-transfer free-space reserve. If a manifest entry specifies an exact `size_bytes`, the check additionally accounts for the remaining file bytes, subtracting any existing resumable `.part` file. The check uses the free space on the filesystem containing the destination directory. Insufficient space is reported as a per-file failure without launching yt-dlp. Combine this with `--max-failures 1` to stop a large batch promptly and retain pending entries in the retry report.
+
+This is a **pre-transfer capacity check**, not an enforced quota or an ongoing free-space monitor. Unknown-size transfers can still exhaust disk space, and other processes can consume space after the check. Download attempts are not limited by this option unless it is explicitly provided. `--min-free-mib` requires a positive whole-number MiB value.
+
