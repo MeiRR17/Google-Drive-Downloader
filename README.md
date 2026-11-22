@@ -532,3 +532,15 @@ This example sets a nominal 5 GiB budget for newly completed downloads. Already-
 
 A budget stop returns exit status `1` and writes the failed/pending recovery report even if `--checkpoint` was not selected. The report can be passed to `--only-failed` in a later run with a fresh budget. If a known-size file exceeds the full budget, increase the budget or use a different selection; otherwise it will remain pending on every attempt. This is a **completed-file accounting limit**, not a live bandwidth quota or a guarantee about how many bytes will be transferred over the network. Set `--max-file-mib` separately to bound individual file size.
 
+### Limit batch running time
+
+Use `--max-run-seconds N` to give a manifest download batch a soft wall-clock time budget:
+
+```bash
+python manifest_downloader.py manifest.json --output downloads --cookies cookies.txt --max-run-seconds 3600 --checkpoint
+```
+
+This example runs the batch for approximately one hour, measured with a monotonic clock after the exclusive output lock has been acquired. The downloader checks the budget before **starting each new file**. If the time budget has elapsed, it stops, returns exit status `1`, and writes a failure report that retains all remaining, unattempted entries as `pending`, even without `--checkpoint`. Run again with `--only-failed` and a new `--failed-report` destination to continue the selected work.
+
+`--max-run-seconds` must be a finite positive number. It does not terminate a download or retry sequence already in progress, so total elapsed time can exceed the configured limit. Combine it with `--file-timeout` to bound individual yt-dlp attempts, or `--max-total-mib` to separately limit completed download bytes. When omitted, batch runtime is unrestricted.
+
