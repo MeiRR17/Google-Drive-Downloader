@@ -406,3 +406,9 @@ The manifest downloader and the legacy course-list exporter validate destination
 
 Duplicate detection is case-insensitive and applies Unicode NFC normalization. For example, filenames whose accented characters have canonically equivalent Unicode encodings are treated as collisions. If an existing legacy course filename violates these rules, rename the path in the source course mapping or in a new manifest before using the opt-in downloader. The original `auto_downloader.py` script is unaffected.
 
+### Prevent concurrent downloads into the same directory
+
+A normal manifest download now creates an exclusive `.manifest-downloader.lock` file inside the selected `--output` directory. Another instance of the manifest downloader targeting that directory exits rather than changing the same destination files, partial downloads or checkpoint state at the same time. The lock contains the process ID for diagnosis and is automatically removed on normal process exit, including after handled errors.
+
+If a process is killed abruptly or the machine crashes, its lock can remain. Check that no downloader process is still operating against the directory before manually deleting the stale `.manifest-downloader.lock` file. Do not remove a live lock to run two instances concurrently. The lock applies only to the new manifest downloader, not to the legacy `auto_downloader.py` script or independent programs that do not honor the lock. Dry-run and offline verification do not create a lock.
+
