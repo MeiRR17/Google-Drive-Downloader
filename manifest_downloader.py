@@ -939,8 +939,9 @@ def main(argv=None):
                         try:
                             result = run_transfer(command, attempt_timeout)
                         except subprocess.TimeoutExpired:
-                            # subprocess.run terminates the timed-out yt-dlp process.
-                            # Retain its .part file so the next attempt can continue.
+                            # run_transfer terminates the yt-dlp process tree
+                            # before staging cleanup. Retain the .part file so
+                            # the next attempt can resume its downloaded bytes.
                             error = f"yt-dlp timed out after {attempt_timeout:g} seconds"
                             validate_staging_paths(target, temporary, partial)
                             temporary.unlink(missing_ok=True)
