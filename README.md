@@ -749,3 +749,11 @@ A batch started with this configuration has a 30-minute elapsed-time budget; an 
 
 Time spent checking hashes, writing/syncing reports, starting and terminating a subprocess, or cleaning up is not forcibly interrupted, so actual process runtime may exceed the limit slightly. The downloader still performs required recovery writes after the deadline. `--max-run-seconds` is not a hard operating-system-level process deadline.
 
+### Consistent integrity diagnostics
+
+Existing destinations, resumable completed staging artifacts, successful yt-dlp outputs, and `--verify-only` all use the same file-integrity rules. The downloader checks that the file exists and is nonempty, compares the exact `size_bytes` where specified, and only then computes and compares SHA-256 if a manifest checksum is available. Size mismatches do not trigger an unnecessary full-file hash.
+
+Failure messages now include useful diagnostic values. For example, an exact-size mismatch can be reported as `size_bytes mismatch: expected 1048576, got 1048000`. SHA-256 mismatch messages include the expected digest and observed digest. These messages flow into ordinary failure reports, progress events, and `--verify-only` output. Invalid completed staging files are discarded before a fresh transfer attempt, with the reason printed to stderr; verified staged files are still atomically promoted.
+
+Integrity metadata remains optional unless `--require-integrity` is set. Without a manifest checksum or size, a nonempty regular file is accepted as before. Reports may contain hashes and local file sizes, but do not contain file contents.
+
