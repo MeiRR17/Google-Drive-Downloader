@@ -2,6 +2,7 @@
 """Download an explicit JSON manifest of Google Drive files with integrity checks."""
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import fnmatch
 import hashlib
@@ -181,6 +182,32 @@ def write_report(path: Path, failures):
             temporary.unlink(missing_ok=True)
 
 
+@contextmanager
+def download_lock(root: Path):
+    """Prevent cooperative download runs from modifying the same output root."""
+    lock_path = root / ".manifest-downloader.lock"
+    try:
+        descriptor = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        raise SystemExit(
+            f"Download directory is locked: {lock_path}. "
+            "If no download is running, remove the stale lock manually."
+        )
+    identity = os.fstat(descriptor)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(f"pid={os.getpid()}\\n")
+            stream.flush()
+        yield
+    finally:
+        try:
+            stat = lock_path.stat(follow_symlinks=False)
+            if (stat.st_dev, stat.st_ino) == (identity.st_dev, identity.st_ino):
+                lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path, help="JSON manifest containing files [{id,path,sha256?}]")
@@ -272,6 +299,11 @@ def main(argv=None):
             for (file_id, _, _), target in zip(entries, destinations)
         }
         reserved_paths = staging_paths | part_paths
+        lock_path = root / ".manifest-downloader.lock"
+        if (lock_path in destinations or lock_path in reserved_paths
+                or lock_path in (report_path, args.manifest.absolute(), args.cookies.absolute())
+                or lock_path == progress_path):
+            raise ValueError("Download lock path conflicts with a manifest entry or input")
         if (report_path in reserved_paths or any(target in reserved_paths for target in destinations)
                 or args.manifest.absolute() in reserved_paths
                 or args.cookies.absolute() in reserved_paths
@@ -307,131 +339,132 @@ def main(argv=None):
     if entries and not args.cookies.is_file():
         parser.error(f"Cookie file not found: {args.cookies}")
     root.mkdir(parents=True, exist_ok=True)
-    failures = []
-    pending = {
-        (file_id, name): {"id": file_id, "path": name, "error": "pending"}
-        for file_id, name, _ in entries
-    }
-    if args.checkpoint:
-        write_report(report_path, list(pending.values()))
-    processed = 0
-    stopped_early = False
-    for index, ((file_id, name, expected), target) in enumerate(zip(entries, destinations)):
-        status = "failed"
-        error = None
-        try:
-            # Recheck to reject symlinks introduced after initial validation.
-            safe_destination(root, name)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            safe_destination(root, name)
-            if target.is_file() and target.stat().st_size > 0 and not args.force:
-                if expected is None or digest(target) == expected:
-                    print(f"SKIP {name}")
-                    if progress_path is not None:
-                        append_progress(progress_path, {
-                            "id": file_id, "path": name, "status": "skipped"
-                        })
-                    pending.pop((file_id, name))
-                    processed += 1
-                    if args.checkpoint:
-                        write_report(report_path, failures + list(pending.values()))
-                    continue
-                print(f"REPLACE checksum mismatch: {name}", file=sys.stderr)
-            temporary, partial = temporary_paths(target, file_id)
-            if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
-                raise ValueError("Symlink at target or temporary download")
-            success = False
-            error = "download failed"
-            for attempt in range(args.retries):
-                # yt-dlp can resume .part across attempts and subsequent invocations.
-                # A completed source-specific .download left by interruption can
-                # be reused, after checking the optional manifest digest.
-                if temporary.is_file() and temporary.stat().st_size > 0:
-                    if expected is None or digest(temporary) == expected:
-                        if target.is_symlink():
-                            raise ValueError("Destination became symlink")
-                        os.replace(temporary, target)
-                        success = True
-                        break
-                    temporary.unlink()
-                    # The completed artifact failed verification; discard stale
-                    # partial state rather than resuming corrupted bytes.
-                    partial.unlink(missing_ok=True)
-                command = [
-                    sys.executable, "-m", "yt_dlp", "--cookies", str(args.cookies),
-                    "--no-playlist", "--continue", "--no-overwrites",
-                    "--format", "best[ext=mp4]/best", "-o", str(temporary),
-                ]
-                if args.limit_rate is not None:
-                    command.extend(["--limit-rate", args.limit_rate.upper()])
-                command.append(f"https://drive.google.com/file/d/{file_id}/view")
-                try:
-                    result = subprocess.run(
-                        command, check=False, timeout=args.file_timeout
-                    )
-                except subprocess.TimeoutExpired:
-                    # subprocess.run terminates the timed-out yt-dlp process.
-                    # Retain its .part file so the next attempt can continue.
-                    error = f"yt-dlp timed out after {args.file_timeout:g} seconds"
+    with download_lock(root):
+        failures = []
+        pending = {
+            (file_id, name): {"id": file_id, "path": name, "error": "pending"}
+            for file_id, name, _ in entries
+        }
+        if args.checkpoint:
+            write_report(report_path, list(pending.values()))
+        processed = 0
+        stopped_early = False
+        for index, ((file_id, name, expected), target) in enumerate(zip(entries, destinations)):
+            status = "failed"
+            error = None
+            try:
+                # Recheck to reject symlinks introduced after initial validation.
+                safe_destination(root, name)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                safe_destination(root, name)
+                if target.is_file() and target.stat().st_size > 0 and not args.force:
+                    if expected is None or digest(target) == expected:
+                        print(f"SKIP {name}")
+                        if progress_path is not None:
+                            append_progress(progress_path, {
+                                "id": file_id, "path": name, "status": "skipped"
+                            })
+                        pending.pop((file_id, name))
+                        processed += 1
+                        if args.checkpoint:
+                            write_report(report_path, failures + list(pending.values()))
+                        continue
+                    print(f"REPLACE checksum mismatch: {name}", file=sys.stderr)
+                temporary, partial = temporary_paths(target, file_id)
+                if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
+                    raise ValueError("Symlink at target or temporary download")
+                success = False
+                error = "download failed"
+                for attempt in range(args.retries):
+                    # yt-dlp can resume .part across attempts and subsequent invocations.
+                    # A completed source-specific .download left by interruption can
+                    # be reused, after checking the optional manifest digest.
+                    if temporary.is_file() and temporary.stat().st_size > 0:
+                        if expected is None or digest(temporary) == expected:
+                            if target.is_symlink():
+                                raise ValueError("Destination became symlink")
+                            os.replace(temporary, target)
+                            success = True
+                            break
+                        temporary.unlink()
+                        # The completed artifact failed verification; discard stale
+                        # partial state rather than resuming corrupted bytes.
+                        partial.unlink(missing_ok=True)
+                    command = [
+                        sys.executable, "-m", "yt_dlp", "--cookies", str(args.cookies),
+                        "--no-playlist", "--continue", "--no-overwrites",
+                        "--format", "best[ext=mp4]/best", "-o", str(temporary),
+                    ]
+                    if args.limit_rate is not None:
+                        command.extend(["--limit-rate", args.limit_rate.upper()])
+                    command.append(f"https://drive.google.com/file/d/{file_id}/view")
+                    try:
+                        result = subprocess.run(
+                            command, check=False, timeout=args.file_timeout
+                        )
+                    except subprocess.TimeoutExpired:
+                        # subprocess.run terminates the timed-out yt-dlp process.
+                        # Retain its .part file so the next attempt can continue.
+                        error = f"yt-dlp timed out after {args.file_timeout:g} seconds"
+                        if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
+                            raise ValueError("Symlink introduced during download")
+                        temporary.unlink(missing_ok=True)
+                        if attempt + 1 < args.retries:
+                            time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
+                        continue
                     if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                         raise ValueError("Symlink introduced during download")
-                    temporary.unlink(missing_ok=True)
+                    if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size > 0:
+                        if expected is None or digest(temporary) == expected:
+                            os.replace(temporary, target)
+                            success = True
+                            break
+                        error = "SHA-256 mismatch"
+                        temporary.unlink()
+                        partial.unlink(missing_ok=True)
+                    else:
+                        error = f"yt-dlp exit status {result.returncode}"
+                        # Do not trust an incomplete non-.part file on retry.
+                        # Retain the resumable .part file produced by yt-dlp.
+                        temporary.unlink(missing_ok=True)
                     if attempt + 1 < args.retries:
                         time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
-                    continue
-                if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
-                    raise ValueError("Symlink introduced during download")
-                if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size > 0:
-                    if expected is None or digest(temporary) == expected:
-                        os.replace(temporary, target)
-                        success = True
-                        break
-                    error = "SHA-256 mismatch"
-                    temporary.unlink()
-                    partial.unlink(missing_ok=True)
+                if success:
+                    status = "downloaded"
+                    print(f"OK   {name}")
                 else:
-                    error = f"yt-dlp exit status {result.returncode}"
-                    # Do not trust an incomplete non-.part file on retry.
-                    # Retain the resumable .part file produced by yt-dlp.
-                    temporary.unlink(missing_ok=True)
-                if attempt + 1 < args.retries:
-                    time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
-            if success:
-                status = "downloaded"
-                print(f"OK   {name}")
-            else:
+                    failures.append({"id": file_id, "path": name, "error": error})
+                    print(f"FAIL {name}: {error}", file=sys.stderr)
+            except (OSError, ValueError) as exc:
+                error = str(exc)
                 failures.append({"id": file_id, "path": name, "error": error})
-                print(f"FAIL {name}: {error}", file=sys.stderr)
-        except (OSError, ValueError) as exc:
-            error = str(exc)
-            failures.append({"id": file_id, "path": name, "error": error})
-            print(f"FAIL {name}: {exc}", file=sys.stderr)
-        if progress_path is not None:
-            event = {"id": file_id, "path": name, "status": status}
-            if status == "failed":
-                event["error"] = error
-            append_progress(progress_path, event)
-        pending.pop((file_id, name))
-        processed += 1
-        if args.checkpoint:
+                print(f"FAIL {name}: {exc}", file=sys.stderr)
+            if progress_path is not None:
+                event = {"id": file_id, "path": name, "status": status}
+                if status == "failed":
+                    event["error"] = error
+                append_progress(progress_path, event)
+            pending.pop((file_id, name))
+            processed += 1
+            if args.checkpoint:
+                write_report(report_path, failures + list(pending.values()))
+            if args.max_failures is not None and len(failures) >= args.max_failures:
+                stopped_early = True
+                print(
+                    f"STOP: reached --max-failures={args.max_failures}; "
+                    f"{len(pending)} entries remain pending",
+                    file=sys.stderr
+                )
+                break
+            if args.sleep_between_files and index + 1 < len(entries):
+                time.sleep(args.sleep_between_files)
+        if not args.checkpoint:
             write_report(report_path, failures + list(pending.values()))
-        if args.max_failures is not None and len(failures) >= args.max_failures:
-            stopped_early = True
-            print(
-                f"STOP: reached --max-failures={args.max_failures}; "
-                f"{len(pending)} entries remain pending",
-                file=sys.stderr
-            )
-            break
-        if args.sleep_between_files and index + 1 < len(entries):
-            time.sleep(args.sleep_between_files)
-    if not args.checkpoint:
-        write_report(report_path, failures + list(pending.values()))
-    print(
-        f"Completed: {processed - len(failures)}/{processed} processed successfully; "
-        f"{len(pending)} pending of {len(entries)} selected"
-    )
-    return 1 if failures or stopped_early else 0
+        print(
+            f"Completed: {processed - len(failures)}/{processed} processed successfully; "
+            f"{len(pending)} pending of {len(entries)} selected"
+        )
+        return 1 if failures or stopped_early else 0
 
 
 if __name__ == "__main__":
