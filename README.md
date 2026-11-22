@@ -733,3 +733,19 @@ If another `yt-dlp` invocation would exceed the attempt allowance, the downloade
 
 A completed entry that already exhausted its own `--retries` allowance remains a failure; the global attempt budget does not erase earlier failures. As with other batch limits, the attempt count is reset for each invocation and is not persisted between runs.
 
+### Runtime deadline across transfers and retry waits
+
+`--max-run-seconds SECONDS` is a **batch-wide** elapsed-time limit, not just a check between files. Before launching `yt-dlp`, the downloader calculates the remaining batch time. Its subprocess timeout is capped by that remaining time (and by `--file-timeout` if supplied), so a single slow transfer cannot continue indefinitely past the configured deadline. The deadline is also checked before each retry, and exponential retry-backoff or `--sleep-between-files` pauses never intentionally exceed the time remaining.
+
+For example:
+
+```bash
+python manifest_downloader.py manifest.json --output downloads \
+  --cookies cookies.txt --max-run-seconds 1800 --file-timeout 600 \
+  --retries 4 --checkpoint --summary-json batch-summary.json
+```
+
+A batch started with this configuration has a 30-minute elapsed-time budget; an individual transfer is limited to 10 minutes **or the shorter remaining batch time**, whichever applies. If the batch deadline is reached during a transfer or a retry pause, the current entry stays `pending` rather than becoming an ordinary failed entry. The failure report and optional JSON summary retain the unfinished batch for `--only-failed` recovery; the summary records `"stop_reason": "time_budget"` and a nonzero exit code.
+
+Time spent checking hashes, writing/syncing reports, starting and terminating a subprocess, or cleaning up is not forcibly interrupted, so actual process runtime may exceed the limit slightly. The downloader still performs required recovery writes after the deadline. `--max-run-seconds` is not a hard operating-system-level process deadline.
+
