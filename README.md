@@ -234,3 +234,20 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 The exporter preserves the original directory names, filenames, and Drive file IDs, and refuses to overwrite an existing `manifest.json`. The generated JSON is a regular editable file: remove entries, add entries, or attach a trusted `sha256` field to individual files before downloading. Importing requires a literal `COURSE_STRUCTURE` dictionary; dynamically calculated structures are deliberately unsupported. Neither the exporter nor the manifest contains cookie credentials. Because a manifest includes Drive file IDs and potentially descriptive filenames, review it before publishing it.
 
 These additions are separate from the legacy script and do not modify its behavior.
+
+### Preview and retry failed entries
+
+Preview the manifest before downloading, without needing a cookie file:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --dry-run
+```
+
+To retry only entries in the previous failure report, retain the original report and write the new result to a different path:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --only-failed failed-downloads.json --failed-report retry-results.json
+```
+
+The retry list is checked against the current manifest (both file ID and destination path). Entries absent from the current manifest are rejected, preventing a stale report from silently introducing unrelated downloads. The script rejects report filenames that overlap input files, download targets or temporary download paths. A successful retry creates a new report with an empty `failed` array. The original report remains available for auditing.
+
