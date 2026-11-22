@@ -10,8 +10,9 @@ import ast
 import json
 from pathlib import Path
 import sys
+import unicodedata
 
-from manifest_downloader import FILE_ID, safe_destination
+from manifest_downloader import FILE_ID, safe_destination, validate_relative_path
 
 
 def read_course_structure(source: Path):
@@ -61,8 +62,9 @@ def export_entries(structure):
                 raise ValueError(f"Unsafe filename in {folder!r}: {filename!r}")
             destination = folder.replace("\\", "/") + "/" + filename
             # Apply exactly the same path checks as the manifest downloader.
+            normalized = validate_relative_path(destination)
             safe_destination(Path("downloads").absolute(), destination)
-            key = destination.casefold()
+            key = unicodedata.normalize("NFC", normalized).casefold()
             if key in destinations:
                 raise ValueError(f"Duplicate target: {destination!r}")
             destinations.add(key)
