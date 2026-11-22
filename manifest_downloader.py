@@ -2,6 +2,7 @@
 """Download an explicit JSON manifest of Google Drive files with integrity checks."""
 
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -90,6 +91,25 @@ def failed_entries(report_path: Path, entries):
     return [entry for entry in entries if (entry[0], entry[1]) in selected]
 
 
+def select_entries(entries, includes, excludes, limit):
+    """Filter manifest paths in their original order, using POSIX-style separators.
+
+    Shell-style patterns are matched against the entire manifest path; glob
+    wildcards are case-sensitive and do not change the destination on disk.
+    """
+    selected = []
+    for entry in entries:
+        path = entry[1].replace("\\", "/")
+        if includes and not any(fnmatch.fnmatchcase(path, pattern) for pattern in includes):
+            continue
+        if any(fnmatch.fnmatchcase(path, pattern) for pattern in excludes):
+            continue
+        selected.append(entry)
+        if limit is not None and len(selected) >= limit:
+            break
+    return selected
+
+
 def write_report(path: Path, failures):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -109,14 +129,23 @@ def main(argv=None):
                         help="Retry only entries listed in a previous failure report")
     parser.add_argument("--dry-run", action="store_true",
                         help="List selected destinations without writing or downloading")
+    parser.add_argument("--include", action="append", default=[], metavar="GLOB",
+                        help="Include matching manifest paths (repeatable)")
+    parser.add_argument("--exclude", action="append", default=[], metavar="GLOB",
+                        help="Exclude matching manifest paths (repeatable)")
+    parser.add_argument("--limit", type=int, metavar="N",
+                        help="Process at most N matching files, in manifest order")
     args = parser.parse_args(argv)
     if args.retries < 1 or args.backoff < 0:
         parser.error("--retries must be >= 1 and --backoff must be >= 0")
+    if args.limit is not None and args.limit < 1:
+        parser.error("--limit must be >= 1")
 
     try:
         entries = load_manifest(args.manifest)
         if args.only_failed is not None:
             entries = failed_entries(args.only_failed, entries)
+        entries = select_entries(entries, args.include, args.exclude, args.limit)
         # Validate every destination before writing anything.
         root = args.output.absolute()
         destinations = [safe_destination(root, name) for _, name, _ in entries]
