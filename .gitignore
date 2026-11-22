@@ -1,1 +1,5 @@
 cookies.txt
+download-progress.jsonl
+failed-downloads.json
+retry-results.json
+**/.manifest-downloader.lock
