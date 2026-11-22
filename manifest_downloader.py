@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import random
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -282,6 +283,8 @@ def main(argv=None):
                         help="Limit yt-dlp transfer speed, e.g. 500K or 2M bytes/second")
     parser.add_argument("--max-file-mib", type=int, metavar="MIB",
                         help="Reject downloads larger than MIB mebibytes (1 MiB = 1048576 bytes)")
+    parser.add_argument("--min-free-mib", type=int, metavar="MIB",
+                        help="Preserve at least MIB MiB of available disk space before transfers")
     parser.add_argument("--sleep-between-files", type=float, default=0.0,
                         metavar="SECONDS",
                         help="Pause between attempted files to reduce request pressure")
@@ -314,7 +317,10 @@ def main(argv=None):
         parser.error("--max-failures must be >= 1")
     if args.max_file_mib is not None and args.max_file_mib < 1:
         parser.error("--max-file-mib must be >= 1")
+    if args.min_free_mib is not None and args.min_free_mib < 1:
+        parser.error("--min-free-mib must be >= 1")
     max_file_bytes = args.max_file_mib * 1024 * 1024 if args.max_file_mib else None
+    reserve_bytes = args.min_free_mib * 1024 * 1024 if args.min_free_mib else None
     if args.file_timeout is not None and not (0 < args.file_timeout < float("inf")):
         parser.error("--file-timeout must be a finite positive number")
     if args.limit_rate is not None and not RATE_LIMIT.fullmatch(args.limit_rate):
@@ -475,6 +481,19 @@ def main(argv=None):
                         # The completed artifact failed verification; discard stale
                         # partial state rather than resuming corrupted bytes.
                         partial.unlink(missing_ok=True)
+                    if reserve_bytes is not None:
+                        # With an exact size, reserve space for the remaining
+                        # bytes as well as the minimum requested free capacity.
+                        partial_bytes = partial.stat().st_size if partial.is_file() else 0
+                        needed = reserve_bytes
+                        if size_bytes is not None:
+                            needed += max(0, size_bytes - partial_bytes)
+                        available = shutil.disk_usage(target.parent).free
+                        if available < needed:
+                            raise ValueError(
+                                f"Insufficient disk space: {available} bytes free, "
+                                f"{needed} required before transfer"
+                            )
                     command = [
                         sys.executable, "-m", "yt_dlp", "--cookies", str(args.cookies),
                         "--no-playlist", "--continue", "--no-overwrites",
