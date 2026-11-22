@@ -280,6 +280,8 @@ def main(argv=None):
     parser.add_argument("manifest", type=Path, help="JSON manifest containing files [{id,path,sha256?}]")
     parser.add_argument("--output", type=Path, default=Path("downloads"))
     parser.add_argument("--cookies", type=Path, default=Path("cookies.txt"))
+    parser.add_argument("--no-cookies", action="store_true",
+                        help="Download public Drive files without an authentication cookie file")
     parser.add_argument("--failed-report", type=Path, default=Path("failed-downloads.json"))
     parser.add_argument("--checkpoint", action="store_true",
                         help="Update failure report after each file, including pending entries")
@@ -428,7 +430,7 @@ def main(argv=None):
         print(f"Verified {len(entries) - len(failures)}/{len(entries)} selected entries")
         # Verification is read-only; no output directory or report is created.
         return 1 if failures else 0
-    if entries and not args.cookies.is_file():
+    if entries and not args.no_cookies and not args.cookies.is_file():
         parser.error(f"Cookie file not found: {args.cookies}")
     root.mkdir(parents=True, exist_ok=True)
     with download_lock(root):
@@ -515,10 +517,12 @@ def main(argv=None):
                                     f"{needed} required before transfer"
                                 )
                         command = [
-                            sys.executable, "-m", "yt_dlp", "--cookies", str(args.cookies),
+                            sys.executable, "-m", "yt_dlp",
                             "--no-playlist", "--continue", "--no-overwrites",
                             "--format", "best[ext=mp4]/best", "-o", str(temporary),
                         ]
+                        if not args.no_cookies:
+                            command.extend(["--cookies", str(args.cookies)])
                         if args.limit_rate is not None:
                             command.extend(["--limit-rate", args.limit_rate.upper()])
                         if args.max_file_mib is not None:
