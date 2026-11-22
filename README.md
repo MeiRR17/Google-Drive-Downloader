@@ -625,3 +625,18 @@ The preflight check for the **complete** manifest also compares control paths ag
 
 Manifest input, authentication cookies (when enabled), retry-input reports, output failure reports, progress journals, and the downloader lock may not overlap one another or any manifest destination/staging artifact under these portable comparison rules. The comparison is conservative on case-sensitive systems: rename a conflicting manifest path or move the affected control file if preflight rejects it. Comparison uses lexically normalized absolute paths; it does not rely on filesystem symlink resolution, which is separately guarded.
 
+### Require verified integrity for selected downloads
+
+Use `--require-integrity` when every file in a selected manifest batch must have both a `sha256` checksum and an exact positive `size_bytes` value. This turns the previously optional metadata into a preflight requirement:
+
+```bash
+python manifest_downloader.py manifest.json --output downloads \
+  --cookies cookies.txt --require-integrity --checkpoint
+```
+
+The check runs after `--only-failed`, `--include`, `--exclude`, `--offset` and `--limit` selection, but before directory creation, downloads, or file changes. It rejects the batch if any selected entry lacks either field. A manifest may still contain entries without integrity metadata as long as they are not selected. Existing destination files must satisfy both checks to be skipped; newly completed files must also match both values before promotion. This option also applies to `--verify-only` and `--dry-run`, which remain read-only. Leave the option unset to retain the previous, more permissive behavior.
+
+Additionally, a manifest entry declaring `size_bytes` larger than `--max-file-mib` now fails **before** downloading or resuming that entry, rather than making a network request for a file that cannot meet the configured file-size ceiling. This early rejection applies only when the destination needs downloading or replacement; an already valid destination may still be skipped without a transfer. The failure appears in the usual retry report. Increase `--max-file-mib` or change the manifest selection to process that file.
+
+Use `annotate_manifest.py` to attach locally calculated checksums and sizes to a manifest when trusted complete copies of those files are available. Checksums calculated from unknown or untrusted content do not establish the authenticity of that content.
+
