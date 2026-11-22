@@ -135,6 +135,8 @@ def main(argv=None):
                         help="Exclude matching manifest paths (repeatable)")
     parser.add_argument("--limit", type=int, metavar="N",
                         help="Process at most N matching files, in manifest order")
+    parser.add_argument("--force", action="store_true",
+                        help="Re-download selected files even when a destination already exists")
     args = parser.parse_args(argv)
     if args.retries < 1 or args.backoff < 0:
         parser.error("--retries must be >= 1 and --backoff must be >= 0")
@@ -157,9 +159,15 @@ def main(argv=None):
             raise ValueError("Failure report must not be a symlink")
         if args.only_failed and args.only_failed.absolute() == report_path and not args.dry_run:
             raise ValueError("Use a different --failed-report when retrying failures")
-        temporary_paths = {target.with_name(target.name + ".download") for target in destinations}
-        if report_path in temporary_paths or any(target in temporary_paths for target in destinations):
-            raise ValueError("Temporary download path conflicts with a manifest entry or report")
+        temporary_paths = {
+            target.with_name(target.name + ".download") for target in destinations
+        }
+        part_paths = {Path(str(path) + ".part") for path in temporary_paths}
+        reserved_paths = temporary_paths | part_paths
+        if (report_path in reserved_paths or any(target in reserved_paths for target in destinations)
+                or args.manifest.absolute() in reserved_paths
+                or args.cookies.absolute() in reserved_paths):
+            raise ValueError("Temporary download path conflicts with an input, entry or report")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 
@@ -178,36 +186,54 @@ def main(argv=None):
             safe_destination(root, name)
             target.parent.mkdir(parents=True, exist_ok=True)
             safe_destination(root, name)
-            if target.is_file() and target.stat().st_size > 0:
+            if target.is_file() and target.stat().st_size > 0 and not args.force:
                 if expected is None or digest(target) == expected:
                     print(f"SKIP {name}")
                     continue
                 print(f"REPLACE checksum mismatch: {name}", file=sys.stderr)
             temporary = target.with_name(target.name + ".download")
-            if temporary.is_symlink() or target.is_symlink():
+            partial = Path(str(temporary) + ".part")
+            if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                 raise ValueError("Symlink at target or temporary download")
             success = False
             error = "download failed"
             for attempt in range(args.retries):
-                temporary.unlink(missing_ok=True)
-                command = [
-                    sys.executable, "-m", "yt_dlp", "--cookies", str(args.cookies),
-                    "--no-playlist", "--no-part", "--no-overwrites",
-                    "--format", "best[ext=mp4]/best", "-o", str(temporary),
-                    f"https://drive.google.com/file/d/{file_id}/view",
-                ]
-                result = subprocess.run(command, check=False)
-                if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size > 0:
+                # yt-dlp can resume .part across attempts and subsequent invocations.
+                # A completed .download left by an interrupted run is also usable,
+                # but only after its optional digest has been checked.
+                if temporary.is_file() and temporary.stat().st_size > 0:
                     if expected is None or digest(temporary) == expected:
                         if target.is_symlink():
                             raise ValueError("Destination became symlink")
                         os.replace(temporary, target)
                         success = True
                         break
+                    temporary.unlink()
+                    # The completed artifact failed verification; discard stale
+                    # partial state rather than resuming corrupted bytes.
+                    partial.unlink(missing_ok=True)
+                command = [
+                    sys.executable, "-m", "yt_dlp", "--cookies", str(args.cookies),
+                    "--no-playlist", "--continue", "--no-overwrites",
+                    "--format", "best[ext=mp4]/best", "-o", str(temporary),
+                    f"https://drive.google.com/file/d/{file_id}/view",
+                ]
+                result = subprocess.run(command, check=False)
+                if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
+                    raise ValueError("Symlink introduced during download")
+                if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size > 0:
+                    if expected is None or digest(temporary) == expected:
+                        os.replace(temporary, target)
+                        success = True
+                        break
                     error = "SHA-256 mismatch"
+                    temporary.unlink()
+                    partial.unlink(missing_ok=True)
                 else:
                     error = f"yt-dlp exit status {result.returncode}"
-                temporary.unlink(missing_ok=True)
+                    # Do not trust an incomplete non-.part file on retry.
+                    # Retain the resumable .part file produced by yt-dlp.
+                    temporary.unlink(missing_ok=True)
                 if attempt + 1 < args.retries:
                     time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
             if success:
