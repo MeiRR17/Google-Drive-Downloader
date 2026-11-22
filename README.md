@@ -192,3 +192,32 @@ For issues with:
 - **yt-dlp**: Visit [yt-dlp GitHub](https://github.com/yt-dlp/yt-dlp)
 - **Cookie export**: Use the Chrome extension mentioned above
 - **Script errors**: Check the error messages in the terminal output
+
+## Manifest downloader (new, opt-in)
+
+`manifest_downloader.py` is an alternative entry point for an explicit JSON file list. It does **not** change the original hard-coded `auto_downloader.py` workflow.
+
+Create a `manifest.json` file:
+
+```json
+{
+  "files": [
+    {
+      "id": "REPLACE_WITH_GOOGLE_DRIVE_FILE_ID",
+      "path": "course/lesson-01.mp4",
+      "sha256": "OPTIONAL_64_CHARACTER_HEX_SHA256"
+    }
+  ]
+}
+```
+
+Remove the `sha256` property when you have no trusted digest; do not use the illustrative placeholder as a real checksum. Run:
+
+```bash
+python -m pip install yt-dlp
+python manifest_downloader.py manifest.json --output downloads --cookies cookies.txt --retries 3 --backoff 2
+```
+
+The downloader creates destination directories, skips existing non-empty files (or verifies them first when SHA-256 is supplied), retries failed transfers, and records failures in `failed-downloads.json`. It exits with status 1 if any entry fails. Downloads first write to a temporary `.download` file and replace the destination only after successful completion and optional checksum verification.
+
+Manifest paths must be relative to the output root. Absolute paths, parent traversal (`..`), repeated separators, duplicate destinations (case-insensitive), and symlinks within the output path are rejected. Keep the cookie file outside version control. This command assumes Python 3.9 or newer and a working yt-dlp installation; no tests have been run for this new entry point yet.
