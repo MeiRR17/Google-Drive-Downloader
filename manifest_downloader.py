@@ -425,6 +425,8 @@ def main(argv=None):
                         help="Stop after N files fail in a row; successful skips reset the count")
     parser.add_argument("--max-total-mib", type=int, metavar="MIB",
                         help="Stop batch after its new downloads reach MIB MiB")
+    parser.add_argument("--max-new-files", type=int, metavar="N",
+                        help="Stop batch after N newly completed files; verified skips do not count")
     parser.add_argument("--max-run-seconds", type=float, metavar="SECONDS",
                         help="Stop at a file boundary after SECONDS of batch processing")
     parser.add_argument("--backoff", type=float, default=2.0)
@@ -480,6 +482,8 @@ def main(argv=None):
         parser.error("--max-consecutive-failures must be >= 1")
     if args.max_total_mib is not None and args.max_total_mib < 1:
         parser.error("--max-total-mib must be >= 1")
+    if args.max_new_files is not None and args.max_new_files < 1:
+        parser.error("--max-new-files must be >= 1")
     if args.max_run_seconds is not None and (
         not math.isfinite(args.max_run_seconds) or args.max_run_seconds <= 0
     ):
@@ -629,6 +633,7 @@ def main(argv=None):
         stopped_time = False
         started_at = time.monotonic()
         downloaded_bytes = 0
+        downloaded_files = 0
         journal_failed = False
         interrupted = False
         try:
@@ -672,8 +677,16 @@ def main(argv=None):
                             f"manifest size_bytes ({size_bytes}) exceeds "
                             f"--max-file-mib ({max_file_bytes} bytes)"
                         )
-                    # A byte budget limits newly completed downloads, not
-                    # inspection or skipping of already valid destinations.
+                    # Batch budgets limit new downloads, not inspection or
+                    # skipping of already verified local destinations.
+                    if args.max_new_files is not None and downloaded_files >= args.max_new_files:
+                        stopped_budget = True
+                        print(
+                            f"STOP: reached --max-new-files={args.max_new_files}; "
+                            f"{len(pending)} entries remain pending",
+                            file=sys.stderr,
+                        )
+                        break
                     if budget_bytes is not None and downloaded_bytes >= budget_bytes:
                         stopped_budget = True
                         print("STOP: download byte budget reached", file=sys.stderr)
@@ -796,6 +809,7 @@ def main(argv=None):
                             time.sleep(retry_delay(args.backoff, attempt, args.max_backoff))
                     if success:
                         status = "downloaded"
+                        downloaded_files += 1
                         downloaded_bytes += target.stat().st_size
                         print(f"OK   {name}")
                     else:
@@ -856,7 +870,7 @@ def main(argv=None):
         print(
             f"Completed: {processed - len(failures)}/{processed} processed successfully; "
             f"{len(pending)} pending of {len(entries)} selected; "
-            f"{downloaded_bytes} new bytes downloaded"
+            f"{downloaded_files} new files, {downloaded_bytes} new bytes completed"
         )
         return 1 if failures or stopped_early or stopped_budget or stopped_time or journal_failed else 0
 
