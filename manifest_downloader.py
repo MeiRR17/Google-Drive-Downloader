@@ -463,6 +463,8 @@ def main(argv=None):
     parser.add_argument("--summary-json", type=Path, metavar="PATH",
                         help="Write a machine-readable JSON summary after a download batch")
     parser.add_argument("--retries", type=int, default=3)
+    parser.add_argument("--max-transfer-attempts", type=int, metavar="N",
+                        help="Stop after N yt-dlp subprocess attempts across the batch")
     parser.add_argument("--max-failures", type=int, metavar="N",
                         help="Stop after N failed files and retain the remaining retry list")
     parser.add_argument("--max-consecutive-failures", type=int, metavar="N",
@@ -512,6 +514,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.retries < 1:
         parser.error("--retries must be >= 1")
+    if args.max_transfer_attempts is not None and args.max_transfer_attempts < 1:
+        parser.error("--max-transfer-attempts must be >= 1")
     if not math.isfinite(args.backoff) or args.backoff < 0:
         parser.error("--backoff must be a finite non-negative number")
     if not math.isfinite(args.max_backoff) or args.max_backoff <= 0:
@@ -686,6 +690,7 @@ def main(argv=None):
         started_at = time.monotonic()
         downloaded_bytes = 0
         downloaded_files = 0
+        transfer_attempts = 0
         skipped_files = 0
         stop_reason = None
         journal_failed = False
@@ -797,6 +802,19 @@ def main(argv=None):
                             # The completed artifact failed verification; discard stale
                             # partial state rather than resuming corrupted bytes.
                             partial.unlink(missing_ok=True)
+                        # Count only yt-dlp launches, not cached skips or
+                        # resumable staging promoted without network access.
+                        if (args.max_transfer_attempts is not None
+                                and transfer_attempts >= args.max_transfer_attempts):
+                            stopped_budget = True
+                            stop_reason = "transfer_attempt_budget"
+                            print(
+                                f"STOP: reached --max-transfer-attempts="
+                                f"{args.max_transfer_attempts}; "
+                                f"{len(pending)} entries remain pending",
+                                file=sys.stderr,
+                            )
+                            break
                         if reserve_bytes is not None:
                             # With an exact size, reserve space for the remaining
                             # bytes as well as the minimum requested free capacity.
@@ -822,6 +840,7 @@ def main(argv=None):
                         if args.max_file_mib is not None:
                             command.extend(["--max-filesize", f"{args.max_file_mib}M"])
                         command.append(f"https://drive.google.com/file/d/{file_id}/view")
+                        transfer_attempts += 1
                         try:
                             result = subprocess.run(
                                 command, check=False, timeout=args.file_timeout
@@ -864,8 +883,15 @@ def main(argv=None):
                             # Do not trust an incomplete non-.part file on retry.
                             # Retain the resumable .part file produced by yt-dlp.
                             temporary.unlink(missing_ok=True)
-                        if attempt + 1 < args.retries:
+                        if attempt + 1 < args.retries and (
+                            args.max_transfer_attempts is None
+                            or transfer_attempts < args.max_transfer_attempts
+                        ):
                             time.sleep(retry_delay(args.backoff, attempt, args.max_backoff))
+                    if stopped_budget and stop_reason == "transfer_attempt_budget":
+                        # Do not classify the interrupted entry as a failure;
+                        # leave it pending for the next batch invocation.
+                        break
                     if success:
                         status = "downloaded"
                         downloaded_files += 1
@@ -935,6 +961,7 @@ def main(argv=None):
                     "selected": len(entries),
                     "processed": processed,
                     "downloaded": downloaded_files,
+                    "transfer_attempts": transfer_attempts,
                     "skipped": skipped_files,
                     "failed": len(failures),
                     "pending": len(pending),
