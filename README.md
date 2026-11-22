@@ -428,3 +428,13 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 
 A forced refresh now always starts the selected transfer from scratch rather than reusing a completed or partial staging artifact from an earlier session. The previous destination remains intact unless a new download finishes and passes any configured SHA-256 check. These options do not remove other files or directories. Avoid starting a second downloader targeting the same output root while either operation is running.
 
+### Limit individual download sizes
+
+Use `--max-file-mib N` to limit each selected transfer to `N` mebibytes (MiB, 1 MiB = 1,048,576 bytes). This is useful for preventing an unexpectedly large file from consuming substantial disk space:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --max-file-mib 2048 --checkpoint
+```
+
+The example sets a 2 GiB limit per downloaded file. The size constraint is passed to yt-dlp, then checked against the resulting completed or partial staging file. Oversized staging files are discarded, the corresponding entry is recorded as a failure, and any existing destination is preserved. An unexpectedly large partial download is not retried repeatedly in the same invocation. This is not a strict network-byte quota: a server that does not provide its size in advance may transfer data before the client can detect an over-limit file. No size ceiling applies unless this option is set, and it does not reject an already-present destination that the downloader would otherwise skip.
+
