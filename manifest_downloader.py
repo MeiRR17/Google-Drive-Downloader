@@ -70,6 +70,23 @@ def load_manifest(path: Path):
     return result
 
 
+def failed_entries(report_path: Path, entries):
+    """Select entries recorded as failures, restricted to the current manifest."""
+    data = json.loads(report_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("failed"), list):
+        raise ValueError("Failure report must contain a failed array")
+    known = {(file_id, path) for file_id, path, _ in entries}
+    selected = set()
+    for index, item in enumerate(data["failed"], 1):
+        if not isinstance(item, dict):
+            raise ValueError(f"Failure report entry {index} must be an object")
+        pair = (item.get("id"), item.get("path"))
+        if pair not in known:
+            raise ValueError(f"Failure report entry {index} does not match the manifest")
+        selected.add(pair)
+    return [entry for entry in entries if (entry[0], entry[1]) in selected]
+
+
 def write_report(path: Path, failures):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -85,14 +102,18 @@ def main(argv=None):
     parser.add_argument("--failed-report", type=Path, default=Path("failed-downloads.json"))
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--backoff", type=float, default=2.0)
+    parser.add_argument("--only-failed", type=Path, metavar="REPORT",
+                        help="Retry only entries listed in a previous failure report")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="List selected destinations without writing or downloading")
     args = parser.parse_args(argv)
     if args.retries < 1 or args.backoff < 0:
         parser.error("--retries must be >= 1 and --backoff must be >= 0")
-    if not args.cookies.is_file():
-        parser.error(f"Cookie file not found: {args.cookies}")
 
     try:
         entries = load_manifest(args.manifest)
+        if args.only_failed is not None:
+            entries = failed_entries(args.only_failed, entries)
         # Validate every destination before writing anything.
         root = args.output.absolute()
         destinations = [safe_destination(root, name) for _, name, _ in entries]
@@ -101,9 +122,21 @@ def main(argv=None):
             raise ValueError("Failure report must not overwrite a download")
         if report_path.is_symlink():
             raise ValueError("Failure report must not be a symlink")
+        if args.only_failed and args.only_failed.absolute() == report_path and not args.dry_run:
+            raise ValueError("Use a different --failed-report when retrying failures")
+        for target in destinations:
+            if report_path == target.with_name(target.name + ".download"):
+                raise ValueError("Failure report conflicts with a temporary download")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 
+    if args.dry_run:
+        for _, name, expected in entries:
+            print(f"PLAN {name}" + (" [SHA-256]" if expected else ""))
+        print(f"Selected {len(entries)} entries; no files changed")
+        return 0
+    if entries and not args.cookies.is_file():
+        parser.error(f"Cookie file not found: {args.cookies}")
     root.mkdir(parents=True, exist_ok=True)
     failures = []
     for (file_id, name, expected), target in zip(entries, destinations):
