@@ -49,16 +49,46 @@ def validate_relative_path(relative: str) -> str:
 
 
 
+def validate_directory_chain(directory: Path, label: str):
+    """Reject symlinks, junctions, and non-directories in a parent chain.
+
+    Check with lstat rather than following links: even a symlink outside the
+    configured output root can redirect a seemingly safe destination.
+    """
+    current = directory
+    while True:
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            pass
+        else:
+            if (not stat.S_ISDIR(mode)
+                    or getattr(current, "is_junction", lambda: False)()):
+                raise ValueError(f"{label} has an unsafe directory component: {current}")
+        if current == current.parent:
+            break
+        current = current.parent
+
+
 def safe_destination(root: Path, relative: str) -> Path:
     normalized = validate_relative_path(relative)
     segments = normalized.split("/")
+    validate_directory_chain(root, "Output root")
     current = root
-    if root.is_symlink():
-        raise ValueError("Output root may not be a symlink")
-    for segment in segments:
+    for index, segment in enumerate(segments):
         current = current / segment
-        if current.is_symlink():
-            raise ValueError(f"Symlink in output path: {relative!r}")
+        try:
+            mode = current.lstat().st_mode
+        except FileNotFoundError:
+            continue
+        if (index == len(segments) - 1
+                and not stat.S_ISREG(mode)):
+            raise ValueError(f"Destination must be a regular file: {relative!r}")
+        if index < len(segments) - 1 and (
+            not stat.S_ISDIR(mode)
+            or getattr(current, "is_junction", lambda: False)()
+        ):
+            raise ValueError(f"Unsafe directory in output path: {relative!r}")
     if not current.resolve().is_relative_to(root.resolve()):
         raise ValueError(f"Destination escapes output root: {relative!r}")
     return current
@@ -266,13 +296,7 @@ def safe_artifact_path(path: Path, label: str):
     else:
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError(f"{label} must be a regular file path: {path}")
-    current = path.parent
-    while True:
-        if current.is_symlink():
-            raise ValueError(f"{label} parent may not be a symlink: {current}")
-        if current == current.parent:
-            break
-        current = current.parent
+    validate_directory_chain(path.parent, label)
 
 
 def append_progress(path: Path, event: dict):
@@ -642,7 +666,9 @@ def main(argv=None):
         return 1 if failures else 0
     if entries and not args.no_cookies and not args.cookies.is_file():
         parser.error(f"Cookie file not found: {args.cookies}")
+    validate_directory_chain(root, "Output root")
     root.mkdir(parents=True, exist_ok=True)
+    validate_directory_chain(root, "Output root")
     with download_lock(root):
         failures = []
         pending = {
