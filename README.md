@@ -458,3 +458,11 @@ Manifest entries can now include an optional `size_bytes` field alongside `id`, 
 
 The local `annotate_manifest.py` tool now adds `size_bytes` to entries that lack it, together with SHA-256 checksums. If a manifest already specifies a size, the annotator verifies it and refuses to overwrite a mismatch. As with local SHA-256 generation, values calculated from downloaded files are a local baseline and not independent confirmation of the remote file's authenticity. The `--max-file-mib` flag is a **separate upper bound** on individual transfers; `size_bytes` is an exact expected length.
 
+### Detect manifest file and directory conflicts before downloading
+
+The downloader validates the **entire** manifest's destination namespace before applying `--include`, `--exclude`, `--offset`, `--limit`, or failure-report selection. In addition to duplicate destination names, it rejects cases where one file path is used as a parent directory of another (for example, `lessons/week1` and `lessons/week1/video.mp4`).
+
+Validation also reserves the downloader's source-specific `.download` and `.download.part` staging filenames, so a manifest entry cannot overwrite another entry's temporary or resumable transfer data. The root-level `.manifest-downloader.lock` filename is reserved. Collision checks use case-insensitive Unicode NFC comparisons across operating systems.
+
+These checks are also applied by `export_legacy_manifest.py`. If a manifest is rejected, rename the conflicting destinations in its source before retrying; filters do not bypass conflicts in the complete manifest. This safeguard is distinct from pre-existing symlink checks, and does not delete or rename any local files.
+
