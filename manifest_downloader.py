@@ -857,7 +857,10 @@ def main(argv=None):
                             if oversized is not None:
                                 error = oversized
                                 break
-                            if attempt + 1 < args.retries:
+                            if attempt + 1 < args.retries and (
+                                args.max_transfer_attempts is None
+                                or transfer_attempts < args.max_transfer_attempts
+                            ):
                                 time.sleep(retry_delay(args.backoff, attempt, args.max_backoff))
                             continue
                         validate_staging_paths(target, temporary, partial)
