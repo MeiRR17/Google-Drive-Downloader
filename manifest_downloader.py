@@ -184,15 +184,22 @@ def manifest_fingerprint(entries) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def failed_entries(report_path: Path, entries):
-    """Select entries recorded as failures, restricted to the current manifest."""
+def failed_entries(report_path: Path, entries, reconcile=False):
+    """Select reported failures; require the original manifest unless opted out."""
     data = json.loads(report_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("failed"), list):
         raise ValueError("Failure report must contain a failed array")
     if data.get("manifest_sha256") != manifest_fingerprint(entries):
-        raise ValueError(
-            "Failure report is missing a matching manifest_sha256 fingerprint; "
-            "create a new failure report for the current manifest"
+        if not reconcile:
+            raise ValueError(
+                "Failure report is missing a matching manifest_sha256 fingerprint; "
+                "create a new failure report for the current manifest, or explicitly "
+                "use --reconcile-failed to match IDs and paths against the new manifest"
+            )
+        print(
+            "WARNING: retry report manifest fingerprint differs; reconciling only "
+            "exact Drive ID and destination path matches under current integrity rules",
+            file=sys.stderr,
         )
     known = {(file_id, path) for file_id, path, _, _ in entries}
     selected = set()
@@ -404,6 +411,8 @@ def main(argv=None):
                         help="Pause between attempted files to reduce request pressure")
     parser.add_argument("--only-failed", type=Path, metavar="REPORT",
                         help="Retry only entries listed in a previous failure report")
+    parser.add_argument("--reconcile-failed", action="store_true",
+                        help="Explicitly allow changed/legacy retry reports for exact ID/path matches")
     parser.add_argument("--dry-run", action="store_true",
                         help="List selected destinations without writing or downloading")
     parser.add_argument("--include", action="append", default=[], metavar="GLOB",
@@ -460,6 +469,8 @@ def main(argv=None):
         parser.error("--verify-only cannot be combined with --dry-run")
     if args.checkpoint and (args.verify_only or args.dry_run):
         parser.error("--checkpoint requires a download run")
+    if args.reconcile_failed and args.only_failed is None:
+        parser.error("--reconcile-failed requires --only-failed REPORT")
 
     try:
         entries = load_manifest(args.manifest)
@@ -478,7 +489,7 @@ def main(argv=None):
             ("Retry input", failed_input_path),
         ])
         if args.only_failed is not None:
-            entries = failed_entries(args.only_failed, entries)
+            entries = failed_entries(args.only_failed, entries, reconcile=args.reconcile_failed)
         entries = select_entries(entries, args.include, args.exclude, args.limit, args.offset)
         # Validate every destination before writing anything.
         root = args.output.absolute()
