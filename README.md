@@ -757,3 +757,11 @@ Failure messages now include useful diagnostic values. For example, an exact-siz
 
 Integrity metadata remains optional unless `--require-integrity` is set. Without a manifest checksum or size, a nonempty regular file is accepted as before. Reports may contain hashes and local file sizes, but do not contain file contents.
 
+### Terminate transfer child processes on timeout and interruption
+
+Each `yt-dlp` invocation now runs with its own process isolation so a timed-out transfer does not leave ordinary helper processes writing the staging file after the downloader has resumed or discarded it. On POSIX systems (Linux and macOS), the downloader starts a new session for `yt-dlp` and sends `SIGKILL` to its process group when the transfer times out or Ctrl+C interrupts the run. On Windows, it creates a new process group and attempts `taskkill /F /T /PID` to terminate the process and its descendants, falling back to directly killing the main process when needed.
+
+The downloader waits for the main `yt-dlp` process to exit before inspecting its `.download` or `.download.part` paths and before attempting another transfer. Resumable `.part` data is retained according to the existing integrity and size safeguards, while the current entry remains pending on an interrupted or batch-deadline-expired run. No separate process-manager dependency is needed.
+
+These controls reduce the risk of ordinary child-process leftovers but do not guarantee cleanup of arbitrary detached subprocesses, especially on Windows when process-tree termination is unavailable. Only launch downloads in a trusted output directory, and do not concurrently modify staging files from unrelated processes.
+
