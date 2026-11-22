@@ -717,3 +717,19 @@ The output root is checked before and after directory creation, and destination 
 
 The checks are intentionally conservative: a path under a benign system symlink (such as `/tmp` or `/var` on some macOS systems) can be rejected. In that case, provide a canonical real directory path for `--output` and metadata output paths instead. These checks are not atomic against an untrusted process concurrently replacing directory components; use a trusted directory with appropriate permissions.
 
+### Cap transfer attempts across a batch
+
+Use `--max-transfer-attempts N` to limit the total number of `yt-dlp` process launches in one download run:
+
+```bash
+python manifest_downloader.py manifest.json --output downloads \
+  --cookies cookies.txt --retries 4 --max-transfer-attempts 20 \
+  --checkpoint --summary-json batch-summary.json
+```
+
+In this example, each file may be retried up to four times, but the whole batch is limited to **20 subprocess attempts**. Timed-out and failed attempts count, as do successful transfers. Verified existing destinations and already complete source-scoped staging files that can be promoted without launching `yt-dlp` do not count. This is a launch budget, not a network-byte, rate, or time limit. Use `--max-total-mib`, `--max-new-files` and `--max-run-seconds` for those separate constraints.
+
+If another `yt-dlp` invocation would exceed the attempt allowance, the downloader stops without starting it. The current entry and all later unfinished entries remain **pending** in the manifest-bound failure report so they can be resumed later with `--only-failed`. The run returns nonzero and its JSON summary records `"stop_reason": "transfer_attempt_budget"`. The `transfer_attempts` summary field records the actual number of subprocess launches. No unnecessary exponential-backoff sleep is performed once the attempt cap is exhausted.
+
+A completed entry that already exhausted its own `--retries` allowance remains a failure; the global attempt budget does not erase earlier failures. As with other batch limits, the attempt count is reset for each invocation and is not persisted between runs.
+
