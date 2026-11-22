@@ -218,7 +218,7 @@ python -m pip install yt-dlp
 python manifest_downloader.py manifest.json --output downloads --cookies cookies.txt --retries 3 --backoff 2
 ```
 
-The downloader creates destination directories, skips existing non-empty files (or verifies them first when SHA-256 is supplied), retries failed transfers, and records failures in `failed-downloads.json`. It exits with status 1 if any entry fails. Downloads first write to a temporary `.download` file and replace the destination only after successful completion and optional checksum verification.
+The downloader creates destination directories, skips existing non-empty files (or verifies them first when SHA-256 is supplied), retries failed transfers, and records failures in `failed-downloads.json`. It exits with status 1 if any entry fails. Downloads first write to a temporary `.download` file and replace the destination only after successful completion and optional checksum verification. yt-dlp retains an associated `.download.part` file after interrupted transfers, allowing later runs to resume supported transfers. Completed temporary files left behind after interruption are reused only after optional checksum validation.
 
 Manifest paths must be relative to the output root. Absolute paths, parent traversal (`..`), repeated separators, duplicate destinations (case-insensitive), and symlinks within the output path are rejected. Keep the cookie file outside version control. This command assumes Python 3.9 or newer and a working yt-dlp installation; no tests have been run for this new entry point yet.
 
@@ -267,4 +267,17 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 ```
 
 Use quotes around patterns so your shell does not expand them. Paths use forward slashes in patterns, even when running on Windows; matching is case-sensitive. Multiple `--include` values are combined as OR, and any matching `--exclude` removes an entry. `--limit` accepts a positive integer and applies after filtering. The JSON failure report records failures from the *selected batch*, not from the entire manifest. For a complete synchronization, omit the selection switches.
+
+
+### Resume interrupted downloads or replace existing files
+
+By default, the manifest downloader skips non-empty destination files, optionally checking the SHA-256 field. If a transfer is interrupted, yt-dlp's partial `.download.part` data is retained, and the next invocation can resume the transfer when the remote server supports range requests. The completed destination is replaced only once the new download finishes and any configured SHA-256 check succeeds.
+
+To deliberately re-download matching entries even when a non-empty destination already exists:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --force --include '01-Linux/*'
+```
+
+The `--force` option applies only to the selected entries and preserves existing destination files until a replacement is ready. It does not bypass SHA-256 verification. To restart a specific transfer from zero rather than resume, remove that file's `.download.part` temporary file while the downloader is **not** running. Avoid running multiple copies of the downloader against the same output paths concurrently.
 
