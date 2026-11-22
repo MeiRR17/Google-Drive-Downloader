@@ -258,9 +258,14 @@ def select_entries(entries, includes, excludes, limit, offset=0):
 
 
 def safe_artifact_path(path: Path, label: str):
-    """Reject symlinks in output metadata paths, including existing parent links."""
-    if path.is_symlink() or path.is_dir():
-        raise ValueError(f"{label} must be a regular file path: {path}")
+    """Reject non-regular metadata files and symlinked parent directories."""
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"{label} must be a regular file path: {path}")
     current = path.parent
     while True:
         if current.is_symlink():
@@ -271,7 +276,7 @@ def safe_artifact_path(path: Path, label: str):
 
 
 def append_progress(path: Path, event: dict):
-    """Append a complete JSONL event after each processed entry."""
+    """Append a JSONL event without following a substituted symlink on POSIX."""
     safe_artifact_path(path, "Progress log")
     path.parent.mkdir(parents=True, exist_ok=True)
     safe_artifact_path(path, "Progress log")
@@ -279,9 +284,21 @@ def append_progress(path: Path, event: dict):
         "timestamp": datetime.now(timezone.utc).isoformat(),
         **event,
     }
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(event, ensure_ascii=False) + "\n")
-        stream.flush()
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    # O_NOFOLLOW protects the final pathname on supporting platforms.
+    # O_NONBLOCK avoids hanging when a file is replaced with a FIFO.
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError(f"Progress log is not a regular file: {path}")
+        with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
+            descriptor = None
+            stream.write(json.dumps(event, ensure_ascii=False) + "\n")
+            stream.flush()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def validate_staging_paths(target: Path, temporary: Path, partial: Path):
