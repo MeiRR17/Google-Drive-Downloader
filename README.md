@@ -676,3 +676,36 @@ Newly created progress journals request owner-only permissions (`0600` before an
 
 Recovery-report destinations now likewise require an existing target to be a regular file rather than a directory, link, device or pipe. These safeguards reduce accidental redirection and blocking but do not provide an absolute guarantee against hostile concurrent mutation on all filesystems; no-follow flags depend on operating-system support. Do not share writable output paths with untrusted processes.
 
+### Machine-readable batch summaries
+
+Use `--summary-json PATH` to emit a structured JSON summary when a download batch finishes, reaches a configured stopping condition, or is interrupted with Ctrl+C:
+
+```bash
+python manifest_downloader.py manifest.json --output downloads \
+  --cookies cookies.txt --checkpoint --summary-json batch-summary.json
+```
+
+The summary is distinct from `--failed-report`, which remains the authoritative source for unfinished files and `--only-failed` recovery. Example shape:
+
+```json
+{
+  "manifest_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "completed_at": "2026-11-22T12:00:00+00:00",
+  "selected": 50,
+  "processed": 26,
+  "downloaded": 20,
+  "skipped": 5,
+  "failed": 1,
+  "pending": 24,
+  "downloaded_bytes": 524288000,
+  "elapsed_seconds": 600.25,
+  "stop_reason": "new_file_budget",
+  "progress_log_failed": false,
+  "exit_code": 1
+}
+```
+
+`processed` counts completed handling of manifest entries (downloads, verified skips, and failures), whereas `downloaded` counts newly completed destination files. `downloaded_bytes` counts their total size and does not measure network bandwidth. `pending` counts selected entries not yet processed, while `failed` counts entries attempted unsuccessfully. The `stop_reason` field is `null` for a normal end of the selected batch, or one of `time_budget`, `new_file_budget`, `byte_budget`, `failure_limit`, `consecutive_failure_limit`, or `interrupted`. A normal end can still have a nonzero `exit_code` if files failed or the optional progress journal failed.
+
+The summary is written with atomic replacement and respects the same non-regular-file, symlink and namespace-collision safeguards as failure reports. Add `--durable-reports` to request file and, on POSIX, directory synchronization for the summary as well. `--summary-json` is available for download runs only, not `--dry-run` or `--verify-only`. A fatal startup error or a failure writing the recovery report can prevent the summary from being written; consumers should check for file presence and the actual process exit code rather than assuming a summary always exists.
+
