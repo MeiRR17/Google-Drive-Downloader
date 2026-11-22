@@ -203,6 +203,16 @@ def append_progress(path: Path, event: dict):
         stream.flush()
 
 
+def record_progress(path: Path, event: dict) -> bool:
+    """Attempt journaling; report an I/O failure without aborting recovery state."""
+    try:
+        append_progress(path, event)
+    except (OSError, ValueError) as exc:
+        print(f"PROGRESS LOG ERROR {path}: {exc}", file=sys.stderr)
+        return False
+    return True
+
+
 def write_report(path: Path, failures):
     """Atomically replace a failure report without using a predictable temp file."""
     if path.is_symlink():
@@ -407,6 +417,7 @@ def main(argv=None):
             write_report(report_path, list(pending.values()))
         processed = 0
         stopped_early = False
+        journal_failed = False
         for index, ((file_id, name, expected, size_bytes), target) in enumerate(zip(entries, destinations)):
             status = "failed"
             error = None
@@ -420,9 +431,11 @@ def main(argv=None):
                             and (expected is None or digest(target) == expected)):
                         print(f"SKIP {name}")
                         if progress_path is not None:
-                            append_progress(progress_path, {
+                            if not record_progress(progress_path, {
                                 "id": file_id, "path": name, "status": "skipped"
-                            })
+                            }):
+                                journal_failed = True
+                                progress_path = None
                         pending.pop((file_id, name))
                         processed += 1
                         if args.checkpoint:
@@ -526,7 +539,9 @@ def main(argv=None):
                 event = {"id": file_id, "path": name, "status": status}
                 if status == "failed":
                     event["error"] = error
-                append_progress(progress_path, event)
+                if not record_progress(progress_path, event):
+                    journal_failed = True
+                    progress_path = None
             pending.pop((file_id, name))
             processed += 1
             if args.checkpoint:
@@ -547,7 +562,7 @@ def main(argv=None):
             f"Completed: {processed - len(failures)}/{processed} processed successfully; "
             f"{len(pending)} pending of {len(entries)} selected"
         )
-        return 1 if failures or stopped_early else 0
+        return 1 if failures or stopped_early or journal_failed else 0
 
 
 if __name__ == "__main__":
