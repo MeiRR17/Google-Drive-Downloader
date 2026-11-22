@@ -306,3 +306,20 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 Each line is a standalone JSON object containing the UTC `timestamp`, Drive `id`, relative `path`, and `status` (`downloaded`, `skipped`, or `failed`). Failure records additionally include an `error` message. The log is appended between runs, so it is useful for reviewing which entries completed before an interruption. The existing `--failed-report` JSON output remains the way to retry failed entries with `--only-failed`; the progress log is for inspection and is not used as an authoritative download manifest. A process stopped during an active transfer may not record an event for that unfinished file.
 
 Progress logging is opt-in and is not created by `--dry-run` or `--verify-only`. Keep progress logs private if file names or Drive IDs are sensitive; `download-progress.jsonl` is ignored by Git in this repository.
+
+### Resume batches by manifest position
+
+For large manifests, combine `--offset` and `--limit` to process successive windows in manifest order. The offset counts entries **after** include/exclude filtering and, if supplied, `--only-failed` selection.
+
+```bash
+# First 50 matching course files
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --limit 50
+
+# Next 50 matching files
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --offset 50 --limit 50
+
+# Inspect a later batch without downloads or cookies
+python manifest_downloader.py manifest.json --include '02-Python/*' --offset 10 --limit 10 --dry-run
+```
+
+`--offset` accepts zero or a positive integer. Keep the manifest and filters unchanged between successive batches to avoid gaps or repeated selections. A batch beyond the final matching entry selects no files. Existing file skipping still applies; `--force` is required to replace already-downloaded destinations. Use `--progress-log` when a durable per-file audit trail is needed.
