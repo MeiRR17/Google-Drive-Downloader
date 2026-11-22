@@ -438,3 +438,23 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 
 The example sets a 2 GiB limit per downloaded file. The size constraint is passed to yt-dlp, then checked against the resulting completed or partial staging file. Oversized staging files are discarded, the corresponding entry is recorded as a failure, and any existing destination is preserved. An unexpectedly large partial download is not retried repeatedly in the same invocation. This is not a strict network-byte quota: a server that does not provide its size in advance may transfer data before the client can detect an over-limit file. No size ceiling applies unless this option is set, and it does not reject an already-present destination that the downloader would otherwise skip.
 
+### Record and verify expected file sizes
+
+Manifest entries can now include an optional `size_bytes` field alongside `id`, `path`, and `sha256`:
+
+```json
+{
+  "files": [
+    {
+      "id": "1AbCdEfGhIjKlMnOpQrStUv",
+      "path": "course/lesson.mp4",
+      "size_bytes": 12582912
+    }
+  ]
+}
+```
+
+`size_bytes` is an exact **positive integer in bytes**, not a rounded MiB estimate. Download mode checks this size before reusing an existing destination, promoting a completed temporary file, or replacing the destination with a new download. A mismatch causes a fresh download or a reported integrity failure. `--verify-only` checks both size and optional SHA-256. The `--dry-run` output indicates when an expected size is present.
+
+The local `annotate_manifest.py` tool now adds `size_bytes` to entries that lack it, together with SHA-256 checksums. If a manifest already specifies a size, the annotator verifies it and refuses to overwrite a mismatch. As with local SHA-256 generation, values calculated from downloaded files are a local baseline and not independent confirmation of the remote file's authenticity. The `--max-file-mib` flag is a **separate upper bound** on individual transfers; `size_bytes` is an exact expected length.
+
