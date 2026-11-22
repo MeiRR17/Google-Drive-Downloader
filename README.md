@@ -382,3 +382,21 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 
 Use these options to reduce connection pressure during large course downloads. They do not guarantee that Google Drive will avoid rate limiting, and they do not override server-side quota restrictions.
 
+### Stop a batch after repeated file failures
+
+Use `--max-failures N` to stop processing when `N` selected files fail (after their individual retry attempts). This helps avoid repeatedly contacting an inaccessible Google Drive account, expired cookie session, or unavailable collection:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --max-failures 3 --checkpoint --failed-report failed-downloads.json
+```
+
+The limit counts **failed files**, not yt-dlp retry attempts; skipped or successfully downloaded files do not contribute. At the threshold, the downloader exits with status 1. The JSON failure report includes actual failures and remaining, unattempted entries marked `pending`, including when `--checkpoint` is not enabled. Using `--checkpoint` also saves the report after each processed file so that abrupt interruption still leaves an actionable list.
+
+After diagnosing the cause, rerun the remaining entries with:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --only-failed failed-downloads.json --failed-report retry-results.json --max-failures 3
+```
+
+When no failure limit is provided, the downloader continues through all selected entries as before. `--max-failures` must be a positive integer.
+
