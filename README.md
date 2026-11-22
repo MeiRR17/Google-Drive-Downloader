@@ -668,3 +668,11 @@ When the configured count has been reached, the downloader can still recognize f
 
 Unlike `--limit`, which caps the number of manifest entries **selected** (including existing skips), `--max-new-files` caps successfully **completed new files**. You can combine it with `--max-total-mib`, `--max-run-seconds`, and failure thresholds; the earliest reached stopping condition determines when the batch ends. Failed file attempts do not count toward `--max-new-files`.
 
+### Safer progress journal file handles
+
+Progress events are appended through a guarded file descriptor rather than a plain text-file open. The journal path and its existing parents are checked for unsafe file types and symbolic links before writing. On platforms with `O_NOFOLLOW`, the final journal pathname cannot be followed through a substituted symbolic link when opened. The opened descriptor is also checked with `fstat`: only regular files may receive JSONL events. `O_NONBLOCK`, where available, prevents an unexpectedly substituted named pipe from blocking the downloader during the open.
+
+Newly created progress journals request owner-only permissions (`0600` before any filesystem or platform-specific adjustments). Existing journal files retain their permissions. A rejected journal write is reported as a progress-log error; the downloader disables further progress logging for that run and preserves the regular download/recovery workflow, while returning a nonzero result.
+
+Recovery-report destinations now likewise require an existing target to be a regular file rather than a directory, link, device or pipe. These safeguards reduce accidental redirection and blocking but do not provide an absolute guarantee against hostile concurrent mutation on all filesystems; no-follow flags depend on operating-system support. Do not share writable output paths with untrusted processes.
+
