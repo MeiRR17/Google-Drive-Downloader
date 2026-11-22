@@ -447,6 +447,8 @@ def main(argv=None):
                         help="Discard selected resumable staging data before downloading")
     parser.add_argument("--verify-only", action="store_true",
                         help="Audit local files and optional checksums without network access")
+    parser.add_argument("--require-integrity", action="store_true",
+                        help="Require both SHA-256 and exact size_bytes for every selected file")
     args = parser.parse_args(argv)
     if args.retries < 1:
         parser.error("--retries must be >= 1")
@@ -509,6 +511,18 @@ def main(argv=None):
         if args.only_failed is not None:
             entries = failed_entries(args.only_failed, entries, reconcile=args.reconcile_failed)
         entries = select_entries(entries, args.include, args.exclude, args.limit, args.offset)
+        if args.require_integrity:
+            for file_id, name, checksum, size_bytes in entries:
+                missing = []
+                if checksum is None:
+                    missing.append("sha256")
+                if size_bytes is None:
+                    missing.append("size_bytes")
+                if missing:
+                    raise ValueError(
+                        f"{name!r} ({file_id}) missing required integrity metadata: "
+                        + ", ".join(missing)
+                    )
         # Validate every destination before writing anything.
         root = args.output.absolute()
         destinations = [safe_destination(root, name) for _, name, _, _ in entries]
@@ -634,6 +648,12 @@ def main(argv=None):
                                 write_report(report_path, failures + list(pending.values()), manifest_sha256)
                             continue
                         print(f"REPLACE integrity mismatch: {name}", file=sys.stderr)
+                    # Reject impossible manifest sizes without starting yt-dlp.
+                    if max_file_bytes is not None and size_bytes is not None and size_bytes > max_file_bytes:
+                        raise ValueError(
+                            f"manifest size_bytes ({size_bytes}) exceeds "
+                            f"--max-file-mib ({max_file_bytes} bytes)"
+                        )
                     # A byte budget limits newly completed downloads, not
                     # inspection or skipping of already valid destinations.
                     if budget_bytes is not None and downloaded_bytes >= budget_bytes:
