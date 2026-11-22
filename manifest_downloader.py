@@ -13,6 +13,7 @@ from pathlib import Path
 import random
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -409,6 +410,42 @@ def retry_delay(backoff: float, attempt: int, maximum: float) -> float:
     # Once the exponential reaches the cap, avoid unbounded integers.
     exponent = min(attempt, 60)
     return min(maximum, backoff * (2 ** exponent) + random.uniform(0, 0.5))
+
+
+def run_transfer(command, timeout):
+    """Run yt-dlp with timeout/interrupt cleanup of its child processes.
+
+    A fresh POSIX session isolates the whole child process group. On Windows,
+    taskkill /T terminates descendants as well as the root process when
+    available, with a direct process kill as the fallback.
+    """
+    options = {}
+    if os.name == "posix":
+        options["start_new_session"] = True
+    elif os.name == "nt":
+        options["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    with subprocess.Popen(command, **options) as process:
+        try:
+            return subprocess.CompletedProcess(command, process.wait(timeout=timeout))
+        except (subprocess.TimeoutExpired, KeyboardInterrupt):
+            if os.name == "posix":
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            elif os.name == "nt":
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                        check=False, timeout=10,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    )
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            raise
 
 
 def record_progress(path: Path, event: dict) -> bool:
@@ -900,9 +937,7 @@ def main(argv=None):
                             )
                         transfer_attempts += 1
                         try:
-                            result = subprocess.run(
-                                command, check=False, timeout=attempt_timeout
-                            )
+                            result = run_transfer(command, attempt_timeout)
                         except subprocess.TimeoutExpired:
                             # subprocess.run terminates the timed-out yt-dlp process.
                             # Retain its .part file so the next attempt can continue.
