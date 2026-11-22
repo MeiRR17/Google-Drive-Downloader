@@ -290,6 +290,8 @@ def main(argv=None):
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--max-failures", type=int, metavar="N",
                         help="Stop after N failed files and retain the remaining retry list")
+    parser.add_argument("--max-total-mib", type=int, metavar="MIB",
+                        help="Stop batch after its new downloads reach MIB MiB")
     parser.add_argument("--backoff", type=float, default=2.0)
     parser.add_argument("--max-backoff", type=float, default=60.0, metavar="SECONDS",
                         help="Maximum wait between retries, including jitter (default: 60)")
@@ -335,6 +337,9 @@ def main(argv=None):
         parser.error("--offset must be >= 0")
     if args.max_failures is not None and args.max_failures < 1:
         parser.error("--max-failures must be >= 1")
+    if args.max_total_mib is not None and args.max_total_mib < 1:
+        parser.error("--max-total-mib must be >= 1")
+    budget_bytes = args.max_total_mib * 1024 * 1024 if args.max_total_mib else None
     if args.max_file_mib is not None and args.max_file_mib < 1:
         parser.error("--max-file-mib must be >= 1")
     if args.min_free_mib is not None and args.min_free_mib < 1:
@@ -443,10 +448,16 @@ def main(argv=None):
             write_report(report_path, list(pending.values()))
         processed = 0
         stopped_early = False
+        stopped_budget = False
+        downloaded_bytes = 0
         journal_failed = False
         interrupted = False
         try:
             for index, ((file_id, name, expected, size_bytes), target) in enumerate(zip(entries, destinations)):
+                if budget_bytes is not None and downloaded_bytes >= budget_bytes:
+                    stopped_budget = True
+                    print("STOP: download byte budget reached", file=sys.stderr)
+                    break
                 status = "failed"
                 error = None
                 try:
@@ -470,6 +481,15 @@ def main(argv=None):
                                 write_report(report_path, failures + list(pending.values()))
                             continue
                         print(f"REPLACE integrity mismatch: {name}", file=sys.stderr)
+                    if (budget_bytes is not None and size_bytes is not None
+                            and size_bytes > budget_bytes - downloaded_bytes):
+                        stopped_budget = True
+                        print(
+                            f"STOP: {name} requires {size_bytes} bytes; "
+                            f"{budget_bytes - downloaded_bytes} remain in batch budget",
+                            file=sys.stderr
+                        )
+                        break
                     temporary, partial = temporary_paths(target, file_id)
                     if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                         raise ValueError("Symlink at target or temporary download")
@@ -570,6 +590,7 @@ def main(argv=None):
                             time.sleep(retry_delay(args.backoff, attempt, args.max_backoff))
                     if success:
                         status = "downloaded"
+                        downloaded_bytes += target.stat().st_size
                         print(f"OK   {name}")
                     else:
                         failures.append({"id": file_id, "path": name, "error": error})
@@ -604,7 +625,7 @@ def main(argv=None):
             # interruption; retrying the report will safely skip valid files.
             interrupted = True
             print("Interrupted: preserving pending downloads for retry", file=sys.stderr)
-        if interrupted or not args.checkpoint:
+        if interrupted or stopped_budget or not args.checkpoint:
             write_report(report_path, failures + list(pending.values()))
         if interrupted:
             print(
@@ -616,9 +637,10 @@ def main(argv=None):
             return 130
         print(
             f"Completed: {processed - len(failures)}/{processed} processed successfully; "
-            f"{len(pending)} pending of {len(entries)} selected"
+            f"{len(pending)} pending of {len(entries)} selected; "
+            f"{downloaded_bytes} new bytes downloaded"
         )
-        return 1 if failures or stopped_early or journal_failed else 0
+        return 1 if failures or stopped_early or stopped_budget or journal_failed else 0
 
 
 if __name__ == "__main__":
