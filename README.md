@@ -640,3 +640,16 @@ Additionally, a manifest entry declaring `size_bytes` larger than `--max-file-mi
 
 Use `annotate_manifest.py` to attach locally calculated checksums and sizes to a manifest when trusted complete copies of those files are available. Checksums calculated from unknown or untrusted content do not establish the authenticity of that content.
 
+### Durable recovery checkpoints
+
+For long-running unattended download batches, add `--durable-reports` to request stronger filesystem persistence for recovery reports:
+
+```bash
+python manifest_downloader.py manifest.json --output downloads --cookies cookies.txt \
+  --checkpoint --durable-reports --failed-report recovery.json
+```
+
+The downloader continues to atomically replace the recovery report using a unique temporary file. With `--durable-reports`, it additionally calls `fsync` on the completed temporary file **before** replacement and, on POSIX systems (including Linux and macOS), calls `fsync` on the parent directory **after** the rename. This makes an acknowledged checkpoint less likely to disappear after a power failure, where the filesystem supports the requested operations. On Windows, the file is synchronized but parent-directory synchronization is not attempted. Filesystem, hardware, and network-storage behavior can still affect durability; the option is not an absolute guarantee of crash recovery.
+
+The flag applies to **every** recovery-report write, including the final report, whether or not `--checkpoint` is enabled. With `--checkpoint`, it adds synchronization overhead after each processed file and may reduce throughput, especially on network or slow drives. If a requested sync fails, the operation reports the underlying filesystem error instead of silently claiming a durable checkpoint. It does not synchronize downloaded media, the progress JSONL journal, or the lock file. `--durable-reports` cannot be combined with `--dry-run` or `--verify-only`.
+
