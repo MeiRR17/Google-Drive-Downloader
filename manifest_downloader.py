@@ -137,11 +137,17 @@ def main(argv=None):
                         help="Process at most N matching files, in manifest order")
     parser.add_argument("--force", action="store_true",
                         help="Re-download selected files even when a destination already exists")
+    parser.add_argument("--verify-only", action="store_true",
+                        help="Audit local files and optional checksums without network access")
     args = parser.parse_args(argv)
     if args.retries < 1 or args.backoff < 0:
         parser.error("--retries must be >= 1 and --backoff must be >= 0")
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be >= 1")
+    if args.verify_only and args.force:
+        parser.error("--verify-only cannot be combined with --force")
+    if args.verify_only and args.dry_run:
+        parser.error("--verify-only cannot be combined with --dry-run")
 
     try:
         entries = load_manifest(args.manifest)
@@ -176,6 +182,25 @@ def main(argv=None):
             print(f"PLAN {name}" + (" [SHA-256]" if expected else ""))
         print(f"Selected {len(entries)} entries; no files changed")
         return 0
+    if args.verify_only:
+        failures = []
+        for (file_id, name, expected), target in zip(entries, destinations):
+            try:
+                safe_destination(root, name)
+                if not target.is_file() or target.stat().st_size == 0:
+                    error = "missing or empty"
+                elif expected is not None and digest(target) != expected:
+                    error = "SHA-256 mismatch"
+                else:
+                    print(f"VALID {name}" + (" [SHA-256]" if expected else " [non-empty]"))
+                    continue
+            except OSError as exc:
+                error = str(exc)
+            failures.append({"id": file_id, "path": name, "error": error})
+            print(f"INVALID {name}: {error}", file=sys.stderr)
+        print(f"Verified {len(entries) - len(failures)}/{len(entries)} selected entries")
+        # Verification is read-only; no output directory or report is created.
+        return 1 if failures else 0
     if entries and not args.cookies.is_file():
         parser.error(f"Cookie file not found: {args.cookies}")
     root.mkdir(parents=True, exist_ok=True)
