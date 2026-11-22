@@ -14,21 +14,40 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 
 FILE_ID = re.compile(r"^[A-Za-z0-9_-]{10,128}$")
 SHA256 = re.compile(r"^[0-9a-fA-F]{64}$")
 RATE_LIMIT = re.compile(r"^[1-9][0-9]*(?:[KMG])?$", re.IGNORECASE)
+WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+WINDOWS_INVALID = set('<>:"|?*')
+
+
+def validate_relative_path(relative: str) -> str:
+    """Validate a portable destination independent of the host filesystem."""
+    if not isinstance(relative, str) or not relative:
+        raise ValueError("Invalid destination path")
+    normalized = relative.replace("\\", "/")
+    components = normalized.split("/")
+    if normalized.startswith("/") or any(part in ("", ".", "..") for part in components):
+        raise ValueError(f"Unsafe destination: {relative!r}")
+    for part in components:
+        if (part.endswith((" ", ".")) or any(
+            char in WINDOWS_INVALID or ord(char) < 32 or ord(char) == 127
+            for char in part
+        ) or part.split(".", 1)[0].upper() in WINDOWS_RESERVED):
+            raise ValueError(f"Non-portable destination: {relative!r}")
+    return normalized
+
 
 
 def safe_destination(root: Path, relative: str) -> Path:
-    if not isinstance(relative, str) or not relative:
-        raise ValueError("Invalid destination path")
-    # Treat backslashes as separators on every platform.
-    normalized = relative.replace("\\", "/")
+    normalized = validate_relative_path(relative)
     segments = normalized.split("/")
-    if (normalized.startswith("/") or any(s in ("", ".", "..") for s in segments)
-            or ":" in segments[0] or any("\x00" in s for s in segments)):
-        raise ValueError(f"Unsafe destination: {relative!r}")
     current = root
     if root.is_symlink():
         raise ValueError("Output root may not be a symlink")
@@ -73,7 +92,8 @@ def load_manifest(path: Path):
             raise ValueError(f"Entry {index}: path must be a string")
         if checksum is not None and (not isinstance(checksum, str) or not SHA256.fullmatch(checksum)):
             raise ValueError(f"Entry {index}: invalid SHA-256")
-        key = name.replace("\\", "/").casefold()
+        normalized = validate_relative_path(name)
+        key = unicodedata.normalize("NFC", normalized).casefold()
         if key in destinations:
             raise ValueError(f"Entry {index}: duplicate destination {name!r}")
         destinations.add(key)
