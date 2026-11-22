@@ -178,11 +178,22 @@ def validate_control_collisions(root: Path, entries, control_paths):
                 raise ValueError(f"{label} {path} conflicts with {other_label} {other_path}")
 
 
+def manifest_fingerprint(entries) -> str:
+    """Fingerprint the complete validated manifest in its original file order."""
+    content = json.dumps(entries, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
 def failed_entries(report_path: Path, entries):
     """Select entries recorded as failures, restricted to the current manifest."""
     data = json.loads(report_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("failed"), list):
         raise ValueError("Failure report must contain a failed array")
+    if data.get("manifest_sha256") != manifest_fingerprint(entries):
+        raise ValueError(
+            "Failure report is missing a matching manifest_sha256 fingerprint; "
+            "create a new failure report for the current manifest"
+        )
     known = {(file_id, path) for file_id, path, _, _ in entries}
     selected = set()
     for index, item in enumerate(data["failed"], 1):
@@ -305,7 +316,7 @@ def record_progress(path: Path, event: dict) -> bool:
     return True
 
 
-def write_report(path: Path, failures):
+def write_report(path: Path, failures, manifest_sha256):
     """Atomically replace a failure report without using a predictable temp file."""
     safe_artifact_path(path, "Failure report")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -317,7 +328,10 @@ def write_report(path: Path, failures):
             prefix=".failed-report-", suffix=".tmp", delete=False
         ) as stream:
             temporary = Path(stream.name)
-            json.dump({"failed": failures}, stream, ensure_ascii=False, indent=2)
+            json.dump(
+                {"manifest_sha256": manifest_sha256, "failed": failures},
+                stream, ensure_ascii=False, indent=2
+            )
             stream.write("\n")
             stream.flush()
         safe_artifact_path(path, "Failure report")
@@ -449,6 +463,7 @@ def main(argv=None):
 
     try:
         entries = load_manifest(args.manifest)
+        manifest_sha256 = manifest_fingerprint(entries)
         root = args.output.absolute()
         report_path = args.failed_report.absolute()
         progress_path = args.progress_log.absolute() if args.progress_log else None
@@ -546,7 +561,7 @@ def main(argv=None):
             for file_id, name, _, _ in entries
         }
         if args.checkpoint:
-            write_report(report_path, list(pending.values()))
+            write_report(report_path, list(pending.values()), manifest_sha256)
         processed = 0
         stopped_early = False
         consecutive_failures = 0
@@ -587,7 +602,7 @@ def main(argv=None):
                             pending.pop((file_id, name))
                             processed += 1
                             if args.checkpoint:
-                                write_report(report_path, failures + list(pending.values()))
+                                write_report(report_path, failures + list(pending.values()), manifest_sha256)
                             continue
                         print(f"REPLACE integrity mismatch: {name}", file=sys.stderr)
                     # A byte budget limits newly completed downloads, not
@@ -734,7 +749,7 @@ def main(argv=None):
                 pending.pop((file_id, name))
                 processed += 1
                 if args.checkpoint:
-                    write_report(report_path, failures + list(pending.values()))
+                    write_report(report_path, failures + list(pending.values()), manifest_sha256)
                 if args.max_failures is not None and len(failures) >= args.max_failures:
                     stopped_early = True
                     print(
@@ -760,7 +775,7 @@ def main(argv=None):
             interrupted = True
             print("Interrupted: preserving pending downloads for retry", file=sys.stderr)
         if interrupted or stopped_budget or stopped_time or not args.checkpoint:
-            write_report(report_path, failures + list(pending.values()))
+            write_report(report_path, failures + list(pending.values()), manifest_sha256)
         if interrupted:
             print(
                 f"Interrupted after {processed}/{len(entries)} entries; "
