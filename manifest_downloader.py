@@ -201,7 +201,7 @@ def download_lock(root: Path):
         yield
     finally:
         try:
-            stat = lock_path.stat(follow_symlinks=False)
+            stat = os.lstat(lock_path)
             if (stat.st_dev, stat.st_ino) == (identity.st_dev, identity.st_ino):
                 lock_path.unlink()
         except FileNotFoundError:
