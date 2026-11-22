@@ -172,6 +172,8 @@ def main(argv=None):
     parser.add_argument("--progress-log", type=Path,
                         help="Append a JSONL record after each download, skip or failure")
     parser.add_argument("--retries", type=int, default=3)
+    parser.add_argument("--max-failures", type=int, metavar="N",
+                        help="Stop after N failed files and retain the remaining retry list")
     parser.add_argument("--backoff", type=float, default=2.0)
     parser.add_argument("--file-timeout", type=float, metavar="SECONDS",
                         help="Maximum wall-clock seconds per yt-dlp attempt")
@@ -203,6 +205,8 @@ def main(argv=None):
         parser.error("--limit must be >= 1")
     if args.offset < 0:
         parser.error("--offset must be >= 0")
+    if args.max_failures is not None and args.max_failures < 1:
+        parser.error("--max-failures must be >= 1")
     if args.file_timeout is not None and not (0 < args.file_timeout < float("inf")):
         parser.error("--file-timeout must be a finite positive number")
     if args.limit_rate is not None and not RATE_LIMIT.fullmatch(args.limit_rate):
@@ -290,6 +294,8 @@ def main(argv=None):
     }
     if args.checkpoint:
         write_report(report_path, list(pending.values()))
+    processed = 0
+    stopped_early = False
     for index, ((file_id, name, expected), target) in enumerate(zip(entries, destinations)):
         status = "failed"
         error = None
@@ -306,6 +312,7 @@ def main(argv=None):
                             "id": file_id, "path": name, "status": "skipped"
                         })
                     pending.pop((file_id, name))
+                    processed += 1
                     if args.checkpoint:
                         write_report(report_path, failures + list(pending.values()))
                     continue
@@ -385,14 +392,26 @@ def main(argv=None):
                 event["error"] = error
             append_progress(progress_path, event)
         pending.pop((file_id, name))
+        processed += 1
         if args.checkpoint:
             write_report(report_path, failures + list(pending.values()))
+        if args.max_failures is not None and len(failures) >= args.max_failures:
+            stopped_early = True
+            print(
+                f"STOP: reached --max-failures={args.max_failures}; "
+                f"{len(pending)} entries remain pending",
+                file=sys.stderr
+            )
+            break
         if args.sleep_between_files and index + 1 < len(entries):
             time.sleep(args.sleep_between_files)
     if not args.checkpoint:
-        write_report(report_path, failures)
-    print(f"Completed: {len(entries) - len(failures)}/{len(entries)} entries successful or already present")
-    return 1 if failures else 0
+        write_report(report_path, failures + list(pending.values()))
+    print(
+        f"Completed: {processed - len(failures)}/{processed} processed successfully; "
+        f"{len(pending)} pending of {len(entries)} selected"
+    )
+    return 1 if failures or stopped_early else 0
 
 
 if __name__ == "__main__":
