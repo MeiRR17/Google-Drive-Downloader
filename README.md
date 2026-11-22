@@ -508,3 +508,15 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 
 Here, the maximum wait between retry attempts is 30 seconds. The default cap is 60 seconds. `--backoff` must be a finite, non-negative number; `--max-backoff` must be finite and greater than zero. A base backoff of zero still allows up to half a second of jitter, subject to the cap. The cap applies to retry waits after both yt-dlp failures and per-file timeouts; it is separate from `--sleep-between-files` and `--file-timeout`. No delay occurs after the final attempt.
 
+### Download public Drive files without a cookie file
+
+If every selected Google Drive file is publicly accessible, opt out of cookie-based authentication with `--no-cookies`:
+
+```bash
+python manifest_downloader.py manifest.json --output downloads --no-cookies --checkpoint
+```
+
+This option omits yt-dlp's `--cookies` argument and skips the usual `cookies.txt` existence requirement. Without `--no-cookies`, the downloader continues to require `--cookies cookies.txt` (or the default `cookies.txt`) for nonempty download batches, preserving existing authenticated behavior. `--no-cookies` applies only to network downloads; read-only `--dry-run` and `--verify-only` modes do not require cookies.
+
+Public links can still fail because of Google Drive sharing permissions, access restrictions, quotas, or extractor support. `--no-cookies` does not bypass authentication or make private files public. For a manifest mixing public and private files, use an authenticated run when the account has access to the selected files, or filter public files into a separate run.
+
