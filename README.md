@@ -582,3 +582,9 @@ These checks also reject file-versus-directory conflicts: for example, a manifes
 
 If the downloader reports a collision, move the control file or rename the conflicting manifest destination before rerunning. Path checks operate on absolute paths and do not replace filesystem permissions, exclusive access or atomic filesystem protections against hostile concurrent changes.
 
+### Byte budget and already-complete files
+
+With `--max-total-mib`, the downloader first checks whether a selected destination is already a valid, nonempty local file (including its optional manifest SHA-256 and exact `size_bytes`). These verified existing files continue to be skipped, even after the batch's new-download byte budget is exhausted. The limit only prevents a **new transfer or staging-file promotion** from starting once its byte budget is reached. Consequently, a later already-complete entry may be skipped after the budget is reached, until the first entry that actually requires downloading is encountered.
+
+This distinction keeps the recovery report focused on unfinished work: files verified locally are removed from `pending`, while the first blocked transfer and later entries stay pending. The separate `--max-run-seconds` limit is checked before each file and may still stop a run without inspecting additional files.
+
