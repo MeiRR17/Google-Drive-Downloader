@@ -12,7 +12,8 @@ from pathlib import Path
 import sys
 import unicodedata
 
-from manifest_downloader import FILE_ID, safe_destination, validate_relative_path
+from manifest_downloader import (FILE_ID, safe_destination, validate_manifest_namespace,
+                                 validate_relative_path)
 
 
 def read_course_structure(source: Path):
@@ -69,6 +70,9 @@ def export_entries(structure):
                 raise ValueError(f"Duplicate target: {destination!r}")
             destinations.add(key)
             entries.append({"id": file_id, "path": destination})
+    validate_manifest_namespace(
+        [(item["id"], item["path"], None, None) for item in entries]
+    )
     return entries
 
 
