@@ -588,3 +588,20 @@ With `--max-total-mib`, the downloader first checks whether a selected destinati
 
 This distinction keeps the recovery report focused on unfinished work: files verified locally are removed from `pending`, while the first blocked transfer and later entries stay pending. The separate `--max-run-seconds` limit is checked before each file and may still stop a run without inspecting additional files.
 
+### Bind retry reports to the exact manifest
+
+Every newly written `--failed-report` now includes a `manifest_sha256` fingerprint in addition to its `failed` array. The fingerprint is calculated from the **complete validated ordered manifest**, including file IDs, paths, optional `sha256` values and exact `size_bytes`. This makes checkpoint and interruption reports specific to the manifest revision that produced them, even when batch filters select only some entries.
+
+When `--only-failed REPORT` is used, the downloader checks this fingerprint **before** selecting or downloading files. If the manifest has changed, or if a legacy report does not contain a matching fingerprint, the operation fails with an explanatory error. Regenerate a failure report from the current manifest before retrying. An example report now has the shape:
+
+```json
+{
+  "manifest_sha256": "<64-character SHA-256 digest>",
+  "failed": [
+    {"id": "1AbCdEfGhIjKlMnOpQrStUv", "path": "course/lesson.mp4", "error": "pending"}
+  ]
+}
+```
+
+The fingerprint is a digest of the downloader's canonical validated entry list, **not** a digest of the raw manifest JSON file bytes; changes to irrelevant whitespace or JSON key order do not affect it. This is a safety check against accidental stale-report reuse, not an authentication mechanism. Reports written by earlier versions of this feature must be regenerated for the new format.
+
