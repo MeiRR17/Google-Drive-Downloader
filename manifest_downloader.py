@@ -2,6 +2,7 @@
 """Download an explicit JSON manifest of Google Drive files with integrity checks."""
 
 import argparse
+from datetime import datetime, timezone
 import fnmatch
 import hashlib
 import json
@@ -117,6 +118,20 @@ def select_entries(entries, includes, excludes, limit):
     return selected
 
 
+def append_progress(path: Path, event: dict):
+    """Append a complete JSONL event after each processed entry."""
+    if path.is_symlink():
+        raise ValueError("Progress log must not be a symlink")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    event = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        **event,
+    }
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(event, ensure_ascii=False) + "\\n")
+        stream.flush()
+
+
 def write_report(path: Path, failures):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -130,6 +145,8 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, default=Path("downloads"))
     parser.add_argument("--cookies", type=Path, default=Path("cookies.txt"))
     parser.add_argument("--failed-report", type=Path, default=Path("failed-downloads.json"))
+    parser.add_argument("--progress-log", type=Path,
+                        help="Append a JSONL record after each download, skip or failure")
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--backoff", type=float, default=2.0)
     parser.add_argument("--only-failed", type=Path, metavar="REPORT",
@@ -165,11 +182,18 @@ def main(argv=None):
         root = args.output.absolute()
         destinations = [safe_destination(root, name) for _, name, _ in entries]
         report_path = args.failed_report.absolute()
+        progress_path = args.progress_log.absolute() if args.progress_log else None
         if (report_path == root or report_path in destinations
                 or report_path in (args.manifest.absolute(), args.cookies.absolute())):
             raise ValueError("Failure report conflicts with an input or download")
         if report_path.is_symlink():
             raise ValueError("Failure report must not be a symlink")
+        if progress_path is not None:
+            if (progress_path.is_symlink() or progress_path in destinations
+                    or progress_path in (root, report_path, args.manifest.absolute(),
+                                         args.cookies.absolute())
+                    or (args.only_failed and progress_path == args.only_failed.absolute())):
+                raise ValueError("Progress log conflicts with an input, report or download")
         if args.only_failed and args.only_failed.absolute() == report_path and not args.dry_run:
             raise ValueError("Use a different --failed-report when retrying failures")
         staging_paths = {
@@ -183,7 +207,8 @@ def main(argv=None):
         reserved_paths = staging_paths | part_paths
         if (report_path in reserved_paths or any(target in reserved_paths for target in destinations)
                 or args.manifest.absolute() in reserved_paths
-                or args.cookies.absolute() in reserved_paths):
+                or args.cookies.absolute() in reserved_paths
+                or (progress_path is not None and progress_path in reserved_paths)):
             raise ValueError("Temporary download path conflicts with an input, entry or report")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
@@ -217,6 +242,8 @@ def main(argv=None):
     root.mkdir(parents=True, exist_ok=True)
     failures = []
     for (file_id, name, expected), target in zip(entries, destinations):
+        status = "failed"
+        error = None
         try:
             # Recheck to reject symlinks introduced after initial validation.
             safe_destination(root, name)
@@ -225,6 +252,10 @@ def main(argv=None):
             if target.is_file() and target.stat().st_size > 0 and not args.force:
                 if expected is None or digest(target) == expected:
                     print(f"SKIP {name}")
+                    if progress_path is not None:
+                        append_progress(progress_path, {
+                            "id": file_id, "path": name, "status": "skipped"
+                        })
                     continue
                 print(f"REPLACE checksum mismatch: {name}", file=sys.stderr)
             temporary, partial = temporary_paths(target, file_id)
@@ -272,13 +303,20 @@ def main(argv=None):
                 if attempt + 1 < args.retries:
                     time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
             if success:
+                status = "downloaded"
                 print(f"OK   {name}")
             else:
                 failures.append({"id": file_id, "path": name, "error": error})
                 print(f"FAIL {name}: {error}", file=sys.stderr)
         except (OSError, ValueError) as exc:
-            failures.append({"id": file_id, "path": name, "error": str(exc)})
+            error = str(exc)
+            failures.append({"id": file_id, "path": name, "error": error})
             print(f"FAIL {name}: {exc}", file=sys.stderr)
+        if progress_path is not None:
+            event = {"id": file_id, "path": name, "status": status}
+            if status == "failed":
+                event["error"] = error
+            append_progress(progress_path, event)
     write_report(args.failed_report, failures)
     print(f"Completed: {len(entries) - len(failures)}/{len(entries)} entries successful or already present")
     return 1 if failures else 0
