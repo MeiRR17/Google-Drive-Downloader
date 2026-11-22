@@ -243,6 +243,8 @@ def main(argv=None):
                         help="Skip the first N entries after path filtering (default: 0)")
     parser.add_argument("--force", action="store_true",
                         help="Re-download selected files even when a destination already exists")
+    parser.add_argument("--restart-partials", action="store_true",
+                        help="Discard selected resumable staging data before downloading")
     parser.add_argument("--verify-only", action="store_true",
                         help="Audit local files and optional checksums without network access")
     args = parser.parse_args(argv)
@@ -373,6 +375,12 @@ def main(argv=None):
                 temporary, partial = temporary_paths(target, file_id)
                 if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                     raise ValueError("Symlink at target or temporary download")
+                if args.restart_partials or args.force:
+                    # Force means genuinely fetch again; a completed old staging
+                    # artifact must not silently satisfy the replacement request.
+                    # Discard only the source-scoped staging paths, never target.
+                    temporary.unlink(missing_ok=True)
+                    partial.unlink(missing_ok=True)
                 success = False
                 error = "download failed"
                 for attempt in range(args.retries):
