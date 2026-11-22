@@ -341,8 +341,12 @@ def record_progress(path: Path, event: dict) -> bool:
     return True
 
 
-def write_report(path: Path, failures, manifest_sha256):
-    """Atomically replace a failure report without using a predictable temp file."""
+def write_report(path: Path, failures, manifest_sha256, *, durable=False):
+    """Atomically replace a failure report, optionally syncing it to storage.
+
+    In durable mode sync the temporary file before replacement, then fsync the
+    containing directory on POSIX to persist the rename where supported.
+    """
     safe_artifact_path(path, "Failure report")
     path.parent.mkdir(parents=True, exist_ok=True)
     safe_artifact_path(path, "Failure report")
@@ -359,8 +363,16 @@ def write_report(path: Path, failures, manifest_sha256):
             )
             stream.write("\n")
             stream.flush()
+            if durable:
+                os.fsync(stream.fileno())
         safe_artifact_path(path, "Failure report")
         os.replace(temporary, path)
+        if durable and os.name == "posix":
+            directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -402,6 +414,8 @@ def main(argv=None):
     parser.add_argument("--failed-report", type=Path, default=Path("failed-downloads.json"))
     parser.add_argument("--checkpoint", action="store_true",
                         help="Update failure report after each file, including pending entries")
+    parser.add_argument("--durable-reports", action="store_true",
+                        help="fsync recovery reports before rename and sync parent directory on POSIX")
     parser.add_argument("--progress-log", type=Path,
                         help="Append a JSONL record after each download, skip or failure")
     parser.add_argument("--retries", type=int, default=3)
@@ -489,6 +503,8 @@ def main(argv=None):
         parser.error("--verify-only cannot be combined with --dry-run")
     if args.checkpoint and (args.verify_only or args.dry_run):
         parser.error("--checkpoint requires a download run")
+    if args.durable_reports and (args.verify_only or args.dry_run):
+        parser.error("--durable-reports requires a download run")
     if args.reconcile_failed and args.only_failed is None:
         parser.error("--reconcile-failed requires --only-failed REPORT")
 
@@ -604,7 +620,8 @@ def main(argv=None):
             for file_id, name, _, _ in entries
         }
         if args.checkpoint:
-            write_report(report_path, list(pending.values()), manifest_sha256)
+            write_report(report_path, list(pending.values()), manifest_sha256,
+                         durable=args.durable_reports)
         processed = 0
         stopped_early = False
         consecutive_failures = 0
@@ -645,7 +662,8 @@ def main(argv=None):
                             pending.pop((file_id, name))
                             processed += 1
                             if args.checkpoint:
-                                write_report(report_path, failures + list(pending.values()), manifest_sha256)
+                                write_report(report_path, failures + list(pending.values()), manifest_sha256,
+                                 durable=args.durable_reports)
                             continue
                         print(f"REPLACE integrity mismatch: {name}", file=sys.stderr)
                     # Reject impossible manifest sizes without starting yt-dlp.
@@ -798,7 +816,8 @@ def main(argv=None):
                 pending.pop((file_id, name))
                 processed += 1
                 if args.checkpoint:
-                    write_report(report_path, failures + list(pending.values()), manifest_sha256)
+                    write_report(report_path, failures + list(pending.values()), manifest_sha256,
+                                 durable=args.durable_reports)
                 if args.max_failures is not None and len(failures) >= args.max_failures:
                     stopped_early = True
                     print(
@@ -824,7 +843,8 @@ def main(argv=None):
             interrupted = True
             print("Interrupted: preserving pending downloads for retry", file=sys.stderr)
         if interrupted or stopped_budget or stopped_time or not args.checkpoint:
-            write_report(report_path, failures + list(pending.values()), manifest_sha256)
+            write_report(report_path, failures + list(pending.values()), manifest_sha256,
+                                 durable=args.durable_reports)
         if interrupted:
             print(
                 f"Interrupted after {processed}/{len(entries)} entries; "
