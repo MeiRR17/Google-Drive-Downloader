@@ -292,6 +292,8 @@ def main(argv=None):
                         help="Stop after N failed files and retain the remaining retry list")
     parser.add_argument("--max-total-mib", type=int, metavar="MIB",
                         help="Stop batch after its new downloads reach MIB MiB")
+    parser.add_argument("--max-run-seconds", type=float, metavar="SECONDS",
+                        help="Stop at a file boundary after SECONDS of batch processing")
     parser.add_argument("--backoff", type=float, default=2.0)
     parser.add_argument("--max-backoff", type=float, default=60.0, metavar="SECONDS",
                         help="Maximum wait between retries, including jitter (default: 60)")
@@ -339,6 +341,10 @@ def main(argv=None):
         parser.error("--max-failures must be >= 1")
     if args.max_total_mib is not None and args.max_total_mib < 1:
         parser.error("--max-total-mib must be >= 1")
+    if args.max_run_seconds is not None and (
+        not math.isfinite(args.max_run_seconds) or args.max_run_seconds <= 0
+    ):
+        parser.error("--max-run-seconds must be a finite positive number")
     budget_bytes = args.max_total_mib * 1024 * 1024 if args.max_total_mib else None
     if args.max_file_mib is not None and args.max_file_mib < 1:
         parser.error("--max-file-mib must be >= 1")
@@ -449,11 +455,21 @@ def main(argv=None):
         processed = 0
         stopped_early = False
         stopped_budget = False
+        stopped_time = False
+        started_at = time.monotonic()
         downloaded_bytes = 0
         journal_failed = False
         interrupted = False
         try:
             for index, ((file_id, name, expected, size_bytes), target) in enumerate(zip(entries, destinations)):
+                if (args.max_run_seconds is not None
+                        and time.monotonic() - started_at >= args.max_run_seconds):
+                    stopped_time = True
+                    print(
+                        f"STOP: batch time budget of {args.max_run_seconds:g} seconds reached",
+                        file=sys.stderr
+                    )
+                    break
                 if budget_bytes is not None and downloaded_bytes >= budget_bytes:
                     stopped_budget = True
                     print("STOP: download byte budget reached", file=sys.stderr)
@@ -625,7 +641,7 @@ def main(argv=None):
             # interruption; retrying the report will safely skip valid files.
             interrupted = True
             print("Interrupted: preserving pending downloads for retry", file=sys.stderr)
-        if interrupted or stopped_budget or not args.checkpoint:
+        if interrupted or stopped_budget or stopped_time or not args.checkpoint:
             write_report(report_path, failures + list(pending.values()))
         if interrupted:
             print(
@@ -640,7 +656,7 @@ def main(argv=None):
             f"{len(pending)} pending of {len(entries)} selected; "
             f"{downloaded_bytes} new bytes downloaded"
         )
-        return 1 if failures or stopped_early or stopped_budget or journal_failed else 0
+        return 1 if failures or stopped_early or stopped_budget or stopped_time or journal_failed else 0
 
 
 if __name__ == "__main__":
