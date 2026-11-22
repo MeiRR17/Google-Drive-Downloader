@@ -520,3 +520,15 @@ This option omits yt-dlp's `--cookies` argument and skips the usual `cookies.txt
 
 Public links can still fail because of Google Drive sharing permissions, access restrictions, quotas, or extractor support. `--no-cookies` does not bypass authentication or make private files public. For a manifest mixing public and private files, use an authenticated run when the account has access to the selected files, or filter public files into a separate run.
 
+### Limit newly downloaded bytes per batch
+
+Use `--max-total-mib N` to bound the total size of newly completed downloads in a single invocation:
+
+```bash
+python manifest_downloader.py manifest.json --output downloads --cookies cookies.txt --max-total-mib 5120 --checkpoint
+```
+
+This example sets a nominal 5 GiB budget for newly completed downloads. Already-present valid destinations that the downloader skips **do not count** toward the budget. A completed download, including a recovered staging file promoted to its destination, counts at its actual byte length. If the manifest specifies `size_bytes`, the downloader stops **before** attempting a file that will exceed the remaining budget, leaving that file and all subsequent entries marked `pending`. If a file has no expected size, its actual size is counted after completion and may put the total above the nominal limit.
+
+A budget stop returns exit status `1` and writes the failed/pending recovery report even if `--checkpoint` was not selected. The report can be passed to `--only-failed` in a later run with a fresh budget. If a known-size file exceeds the full budget, increase the budget or use a different selection; otherwise it will remain pending on every attempt. This is a **completed-file accounting limit**, not a live bandwidth quota or a guarantee about how many bytes will be transferred over the network. Set `--max-file-mib` separately to bound individual file size.
+
