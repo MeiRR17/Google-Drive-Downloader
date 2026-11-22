@@ -466,3 +466,9 @@ Validation also reserves the downloader's source-specific `.download` and `.down
 
 These checks are also applied by `export_legacy_manifest.py`. If a manifest is rejected, rename the conflicting destinations in its source before retrying; filters do not bypass conflicts in the complete manifest. This safeguard is distinct from pre-existing symlink checks, and does not delete or rename any local files.
 
+### Progress journal write failures
+
+When `--progress-log` is enabled, each processed file normally produces a JSONL event. If the journal cannot be appended to (for example, because the disk is full, the log location becomes unwritable, or a symlink is detected), the downloader prints a `PROGRESS LOG ERROR` message to standard error and stops writing further progress events for that invocation.
+
+The downloader does **not** reinterpret an otherwise successful download as a failed transfer merely because the optional journal write failed. It continues processing files and updating `--failed-report` and `--checkpoint` normally, then exits with status `1` to flag incomplete progress logging even if all files downloaded successfully. Use `--verify-only` or review destination files to establish which transfers completed; an incomplete progress journal is not an authoritative completion record.
+
