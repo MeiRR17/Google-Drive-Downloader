@@ -251,3 +251,20 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 
 The retry list is checked against the current manifest (both file ID and destination path). Entries absent from the current manifest are rejected, preventing a stale report from silently introducing unrelated downloads. The script rejects report filenames that overlap input files, download targets or temporary download paths. A successful retry creates a new report with an empty `failed` array. The original report remains available for auditing.
 
+### Select courses and limit download batches
+
+The manifest downloader supports repeated include/exclude patterns and bounded batches, preserving the order of the original manifest. These filters apply after `--only-failed` (if supplied), and before downloading:
+
+```bash
+# Preview just the Linux lessons (no cookie file required)
+python manifest_downloader.py manifest.json --include '01-Linux/*' --dry-run
+
+# Download up to five entries from either Python subfolder
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --include '02-Python/*' --limit 5
+
+# Download all entries except Tableau
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --exclude '08-Tableau/*'
+```
+
+Use quotes around patterns so your shell does not expand them. Paths use forward slashes in patterns, even when running on Windows; matching is case-sensitive. Multiple `--include` values are combined as OR, and any matching `--exclude` removes an entry. `--limit` accepts a positive integer and applies after filtering. The JSON failure report records failures from the *selected batch*, not from the entire manifest. For a complete synchronization, omit the selection switches.
+
