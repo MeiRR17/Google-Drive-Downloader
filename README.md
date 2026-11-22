@@ -568,3 +568,9 @@ Before a yt-dlp retry resumes an existing source-scoped `.download.part` file, t
 
 This limit check also runs after a timed-out yt-dlp attempt, including the final attempt, so an over-limit partial is not left behind for the next invocation. When the partial is within the applicable limits, the existing resume behavior is unchanged. A completed destination is never deleted by this cleanup. Without a manifest size or `--max-file-mib`, no such numeric partial-size bound exists.
 
+### Reject unsafe staging-file types
+
+For resumed or interrupted yt-dlp transfers, the downloader checks the final destination, source-scoped `.download` file, and corresponding `.download.part` file using filesystem metadata that does **not** follow symbolic links. Any of those paths occupied by a symbolic link, directory, named pipe, socket, or other non-regular filesystem object is rejected as a file failure. The validation is repeated before every retry and after yt-dlp attempts or timeouts.
+
+This protects against accidentally reusing or deleting unexpected filesystem objects at the staging filenames. It does not provide an atomic guarantee against another process replacing a file between validation and use; do not share the output directory with untrusted concurrent processes. Normal regular-file resumptions and existing destination files continue to be supported.
+
