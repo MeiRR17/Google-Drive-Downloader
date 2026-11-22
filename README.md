@@ -294,3 +294,15 @@ python manifest_downloader.py manifest.json --output University_Course_Data --ve
 The command exits with status 0 when every selected destination is a non-empty regular file and all declared SHA-256 digests match. Missing files, empty files, and digest mismatches are printed as `INVALID` and cause exit status 1. Without a manifest SHA-256, the audit establishes only that the local file exists and is non-empty; it cannot prove that its contents match Google Drive.
 
 For safe resume, temporary transfer filenames include a deterministic token derived from the Google Drive file ID. This avoids accidentally reusing a temporary file from another Drive source if two manifests assign different source IDs to the same output name. These staging filenames are implementation details and may be removed manually only when the downloader is stopped.
+
+### Record persistent per-file progress
+
+For long course downloads, append a timestamped, machine-readable journal as each file is processed:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --progress-log download-progress.jsonl
+```
+
+Each line is a standalone JSON object containing the UTC `timestamp`, Drive `id`, relative `path`, and `status` (`downloaded`, `skipped`, or `failed`). Failure records additionally include an `error` message. The log is appended between runs, so it is useful for reviewing which entries completed before an interruption. The existing `--failed-report` JSON output remains the way to retry failed entries with `--only-failed`; the progress log is for inspection and is not used as an authoritative download manifest. A process stopped during an active transfer may not record an event for that unfinished file.
+
+Progress logging is opt-in and is not created by `--dry-run` or `--verify-only`. Keep progress logs private if file names or Drive IDs are sensitive; `download-progress.jsonl` is ignored by Git in this repository.
