@@ -191,11 +191,24 @@ def select_entries(entries, includes, excludes, limit, offset=0):
     return selected
 
 
+def safe_artifact_path(path: Path, label: str):
+    """Reject symlinks in output metadata paths, including existing parent links."""
+    if path.is_symlink() or path.is_dir():
+        raise ValueError(f"{label} must be a regular file path: {path}")
+    current = path.parent
+    while True:
+        if current.is_symlink():
+            raise ValueError(f"{label} parent may not be a symlink: {current}")
+        if current == current.parent:
+            break
+        current = current.parent
+
+
 def append_progress(path: Path, event: dict):
     """Append a complete JSONL event after each processed entry."""
-    if path.is_symlink():
-        raise ValueError("Progress log must not be a symlink")
+    safe_artifact_path(path, "Progress log")
     path.parent.mkdir(parents=True, exist_ok=True)
+    safe_artifact_path(path, "Progress log")
     event = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         **event,
@@ -228,9 +241,9 @@ def record_progress(path: Path, event: dict) -> bool:
 
 def write_report(path: Path, failures):
     """Atomically replace a failure report without using a predictable temp file."""
-    if path.is_symlink():
-        raise ValueError("Failure report must not be a symlink")
+    safe_artifact_path(path, "Failure report")
     path.parent.mkdir(parents=True, exist_ok=True)
+    safe_artifact_path(path, "Failure report")
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -241,8 +254,7 @@ def write_report(path: Path, failures):
             json.dump({"failed": failures}, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
             stream.flush()
-        if path.is_symlink():
-            raise ValueError("Failure report became a symlink")
+        safe_artifact_path(path, "Failure report")
         os.replace(temporary, path)
     finally:
         if temporary is not None:
@@ -378,10 +390,10 @@ def main(argv=None):
         if (report_path == root or report_path in destinations
                 or report_path in (args.manifest.absolute(), args.cookies.absolute())):
             raise ValueError("Failure report conflicts with an input or download")
-        if report_path.is_symlink():
-            raise ValueError("Failure report must not be a symlink")
+        safe_artifact_path(report_path, "Failure report")
         if progress_path is not None:
-            if (progress_path.is_symlink() or progress_path in destinations
+            safe_artifact_path(progress_path, "Progress log")
+            if (progress_path in destinations
                     or progress_path in (root, report_path, args.manifest.absolute(),
                                          args.cookies.absolute())
                     or (args.only_failed and progress_path == args.only_failed.absolute())):
