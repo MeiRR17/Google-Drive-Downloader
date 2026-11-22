@@ -149,6 +149,35 @@ def load_manifest(path: Path):
     return result
 
 
+def validate_control_collisions(root: Path, entries, control_paths):
+    """Protect inputs and metadata from the entire manifest, not just this batch.
+
+    A control file cannot occupy a download destination, a resumable artifact,
+    or a directory needed to store any of them.
+    """
+    artifacts = [(root / ".manifest-downloader.lock", "download lock")]
+    for file_id, name, _, _ in entries:
+        destination = root.joinpath(*validate_relative_path(name).split("/"))
+        temporary, partial = temporary_paths(destination, file_id)
+        artifacts.extend([
+            (destination, f"download {name!r}"),
+            (temporary, f"staged download {name!r}"),
+            (partial, f"partial download {name!r}"),
+        ])
+
+    controls = [(label, path) for label, path in control_paths if path is not None]
+    for label, path in controls:
+        if path == root:
+            raise ValueError(f"{label} may not be the output directory")
+        for artifact, description in artifacts:
+            if path == artifact or path in artifact.parents or artifact in path.parents:
+                raise ValueError(f"{label} {path} conflicts with {description} {artifact}")
+    for index, (label, path) in enumerate(controls):
+        for other_label, other_path in controls[index + 1:]:
+            if path == other_path or path in other_path.parents or other_path in path.parents:
+                raise ValueError(f"{label} {path} conflicts with {other_label} {other_path}")
+
+
 def failed_entries(report_path: Path, entries):
     """Select entries recorded as failures, restricted to the current manifest."""
     data = json.loads(report_path.read_text(encoding="utf-8"))
@@ -420,6 +449,19 @@ def main(argv=None):
 
     try:
         entries = load_manifest(args.manifest)
+        root = args.output.absolute()
+        report_path = args.failed_report.absolute()
+        progress_path = args.progress_log.absolute() if args.progress_log else None
+        manifest_path = args.manifest.absolute()
+        cookie_path = args.cookies.absolute() if not args.no_cookies else None
+        failed_input_path = args.only_failed.absolute() if args.only_failed else None
+        validate_control_collisions(root, entries, [
+            ("Manifest", manifest_path),
+            ("Cookies", cookie_path),
+            ("Failure report", report_path),
+            ("Progress log", progress_path),
+            ("Retry input", failed_input_path),
+        ])
         if args.only_failed is not None:
             entries = failed_entries(args.only_failed, entries)
         entries = select_entries(entries, args.include, args.exclude, args.limit, args.offset)
