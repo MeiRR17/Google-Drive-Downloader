@@ -566,10 +566,6 @@ def main(argv=None):
                         file=sys.stderr
                     )
                     break
-                if budget_bytes is not None and downloaded_bytes >= budget_bytes:
-                    stopped_budget = True
-                    print("STOP: download byte budget reached", file=sys.stderr)
-                    break
                 status = "failed"
                 error = None
                 try:
@@ -594,6 +590,12 @@ def main(argv=None):
                                 write_report(report_path, failures + list(pending.values()))
                             continue
                         print(f"REPLACE integrity mismatch: {name}", file=sys.stderr)
+                    # A byte budget limits newly completed downloads, not
+                    # inspection or skipping of already valid destinations.
+                    if budget_bytes is not None and downloaded_bytes >= budget_bytes:
+                        stopped_budget = True
+                        print("STOP: download byte budget reached", file=sys.stderr)
+                        break
                     if (budget_bytes is not None and size_bytes is not None
                             and size_bytes > budget_bytes - downloaded_bytes):
                         stopped_budget = True
