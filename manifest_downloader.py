@@ -302,6 +302,8 @@ def main(argv=None):
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--max-failures", type=int, metavar="N",
                         help="Stop after N failed files and retain the remaining retry list")
+    parser.add_argument("--max-consecutive-failures", type=int, metavar="N",
+                        help="Stop after N files fail in a row; successful skips reset the count")
     parser.add_argument("--max-total-mib", type=int, metavar="MIB",
                         help="Stop batch after its new downloads reach MIB MiB")
     parser.add_argument("--max-run-seconds", type=float, metavar="SECONDS",
@@ -351,6 +353,8 @@ def main(argv=None):
         parser.error("--offset must be >= 0")
     if args.max_failures is not None and args.max_failures < 1:
         parser.error("--max-failures must be >= 1")
+    if args.max_consecutive_failures is not None and args.max_consecutive_failures < 1:
+        parser.error("--max-consecutive-failures must be >= 1")
     if args.max_total_mib is not None and args.max_total_mib < 1:
         parser.error("--max-total-mib must be >= 1")
     if args.max_run_seconds is not None and (
@@ -466,6 +470,7 @@ def main(argv=None):
             write_report(report_path, list(pending.values()))
         processed = 0
         stopped_early = False
+        consecutive_failures = 0
         stopped_budget = False
         stopped_time = False
         started_at = time.monotonic()
@@ -503,6 +508,7 @@ def main(argv=None):
                                 }):
                                     journal_failed = True
                                     progress_path = None
+                            consecutive_failures = 0
                             pending.pop((file_id, name))
                             processed += 1
                             if args.checkpoint:
@@ -634,6 +640,7 @@ def main(argv=None):
                     if not record_progress(progress_path, event):
                         journal_failed = True
                         progress_path = None
+                consecutive_failures = consecutive_failures + 1 if status == "failed" else 0
                 pending.pop((file_id, name))
                 processed += 1
                 if args.checkpoint:
@@ -642,6 +649,15 @@ def main(argv=None):
                     stopped_early = True
                     print(
                         f"STOP: reached --max-failures={args.max_failures}; "
+                        f"{len(pending)} entries remain pending",
+                        file=sys.stderr
+                    )
+                    break
+                if (args.max_consecutive_failures is not None
+                        and consecutive_failures >= args.max_consecutive_failures):
+                    stopped_early = True
+                    print(
+                        f"STOP: {consecutive_failures} consecutive failures; "
                         f"{len(pending)} entries remain pending",
                         file=sys.stderr
                     )
