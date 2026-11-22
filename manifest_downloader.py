@@ -38,6 +38,13 @@ def safe_destination(root: Path, relative: str) -> Path:
     return current
 
 
+def temporary_paths(target: Path, file_id: str):
+    """Give each source file its own resumable temporary download namespace."""
+    token = hashlib.sha256(file_id.encode("ascii")).hexdigest()[:16]
+    staging = target.with_name(target.name + "." + token + ".download")
+    return staging, Path(str(staging) + ".part")
+
+
 def digest(path: Path) -> str:
     hasher = hashlib.sha256()
     with path.open("rb") as stream:
@@ -165,11 +172,15 @@ def main(argv=None):
             raise ValueError("Failure report must not be a symlink")
         if args.only_failed and args.only_failed.absolute() == report_path and not args.dry_run:
             raise ValueError("Use a different --failed-report when retrying failures")
-        temporary_paths = {
-            target.with_name(target.name + ".download") for target in destinations
+        staging_paths = {
+            temporary_paths(target, file_id)[0]
+            for (file_id, _, _), target in zip(entries, destinations)
         }
-        part_paths = {Path(str(path) + ".part") for path in temporary_paths}
-        reserved_paths = temporary_paths | part_paths
+        part_paths = {
+            temporary_paths(target, file_id)[1]
+            for (file_id, _, _), target in zip(entries, destinations)
+        }
+        reserved_paths = staging_paths | part_paths
         if (report_path in reserved_paths or any(target in reserved_paths for target in destinations)
                 or args.manifest.absolute() in reserved_paths
                 or args.cookies.absolute() in reserved_paths):
@@ -216,16 +227,15 @@ def main(argv=None):
                     print(f"SKIP {name}")
                     continue
                 print(f"REPLACE checksum mismatch: {name}", file=sys.stderr)
-            temporary = target.with_name(target.name + ".download")
-            partial = Path(str(temporary) + ".part")
+            temporary, partial = temporary_paths(target, file_id)
             if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                 raise ValueError("Symlink at target or temporary download")
             success = False
             error = "download failed"
             for attempt in range(args.retries):
                 # yt-dlp can resume .part across attempts and subsequent invocations.
-                # A completed .download left by an interrupted run is also usable,
-                # but only after its optional digest has been checked.
+                # A completed source-specific .download left by interruption can
+                # be reused, after checking the optional manifest digest.
                 if temporary.is_file() and temporary.stat().st_size > 0:
                     if expected is None or digest(temporary) == expected:
                         if target.is_symlink():
