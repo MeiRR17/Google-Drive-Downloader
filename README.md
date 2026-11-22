@@ -484,3 +484,17 @@ In this example, the downloader keeps a 4 GiB pre-transfer free-space reserve. I
 
 This is a **pre-transfer capacity check**, not an enforced quota or an ongoing free-space monitor. Unknown-size transfers can still exhaust disk space, and other processes can consume space after the check. Download attempts are not limited by this option unless it is explicitly provided. `--min-free-mib` requires a positive whole-number MiB value.
 
+### Resume after pressing Ctrl+C
+
+The manifest downloader now handles an interactive Ctrl+C interruption by saving a JSON failure report containing all unsuccessful and not-yet-processed entries. The current in-progress file remains in the pending list, so any completed file will be checked and skipped on the next run if it matches the manifest. Resumable `.part` data is preserved. The downloader exits with code `130`, and the exclusive output-directory lock is released through normal cleanup.
+
+```bash
+# You can interrupt this batch with Ctrl+C.
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --failed-report interrupted.json
+
+# Resume the failed and pending subset.
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --only-failed interrupted.json --failed-report resumed.json
+```
+
+This graceful recovery also works when `--checkpoint` was not supplied. `--checkpoint` remains useful for abrupt process termination, power loss and crashes where Python cannot process Ctrl+C. The report is written after interruption is handled, so it cannot be guaranteed if the system is terminated during the report write itself. A second interrupt or uncatchable termination may also prevent graceful recovery.
+
