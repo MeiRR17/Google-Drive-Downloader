@@ -13,6 +13,7 @@ from pathlib import Path
 import random
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -216,6 +217,25 @@ def append_progress(path: Path, event: dict):
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(event, ensure_ascii=False) + "\n")
         stream.flush()
+
+
+def validate_staging_paths(target: Path, temporary: Path, partial: Path):
+    """Only ordinary files may occupy final or source-scoped staging paths.
+
+    lstat avoids following symbolic links or special files while inspecting
+    interrupted transfers before they are reused, deleted, or replaced.
+    """
+    for name, path in (
+        ("destination", target),
+        ("staged download", temporary),
+        ("partial download", partial),
+    ):
+        try:
+            metadata = path.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"{name} must be a regular file: {path}")
 
 
 def discard_oversized_partial(temporary: Path, partial: Path, expected_size, max_size):
@@ -542,8 +562,7 @@ def main(argv=None):
                         )
                         break
                     temporary, partial = temporary_paths(target, file_id)
-                    if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
-                        raise ValueError("Symlink at target or temporary download")
+                    validate_staging_paths(target, temporary, partial)
                     if args.restart_partials or args.force:
                         # Force means genuinely fetch again; a completed old staging
                         # artifact must not silently satisfy the replacement request.
@@ -553,6 +572,7 @@ def main(argv=None):
                     success = False
                     error = "download failed"
                     for attempt in range(args.retries):
+                        validate_staging_paths(target, temporary, partial)
                         error = discard_oversized_partial(
                             temporary, partial, size_bytes, max_file_bytes
                         )
@@ -612,8 +632,7 @@ def main(argv=None):
                             # subprocess.run terminates the timed-out yt-dlp process.
                             # Retain its .part file so the next attempt can continue.
                             error = f"yt-dlp timed out after {args.file_timeout:g} seconds"
-                            if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
-                                raise ValueError("Symlink introduced during download")
+                            validate_staging_paths(target, temporary, partial)
                             temporary.unlink(missing_ok=True)
                             oversized = discard_oversized_partial(
                                 temporary, partial, size_bytes, max_file_bytes
@@ -624,8 +643,7 @@ def main(argv=None):
                             if attempt + 1 < args.retries:
                                 time.sleep(retry_delay(args.backoff, attempt, args.max_backoff))
                             continue
-                        if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
-                            raise ValueError("Symlink introduced during download")
+                        validate_staging_paths(target, temporary, partial)
                         if max_file_bytes is not None and (
                             (temporary.is_file() and temporary.stat().st_size > max_file_bytes)
                             or (partial.is_file() and partial.stat().st_size > max_file_bytes)
