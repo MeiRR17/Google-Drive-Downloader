@@ -424,159 +424,174 @@ def main(argv=None):
         processed = 0
         stopped_early = False
         journal_failed = False
-        for index, ((file_id, name, expected, size_bytes), target) in enumerate(zip(entries, destinations)):
-            status = "failed"
-            error = None
-            try:
-                # Recheck to reject symlinks introduced after initial validation.
-                safe_destination(root, name)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                safe_destination(root, name)
-                if target.is_file() and target.stat().st_size > 0 and not args.force:
-                    if ((size_bytes is None or target.stat().st_size == size_bytes)
-                            and (expected is None or digest(target) == expected)):
-                        print(f"SKIP {name}")
-                        if progress_path is not None:
-                            if not record_progress(progress_path, {
-                                "id": file_id, "path": name, "status": "skipped"
-                            }):
-                                journal_failed = True
-                                progress_path = None
-                        pending.pop((file_id, name))
-                        processed += 1
-                        if args.checkpoint:
-                            write_report(report_path, failures + list(pending.values()))
-                        continue
-                    print(f"REPLACE integrity mismatch: {name}", file=sys.stderr)
-                temporary, partial = temporary_paths(target, file_id)
-                if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
-                    raise ValueError("Symlink at target or temporary download")
-                if args.restart_partials or args.force:
-                    # Force means genuinely fetch again; a completed old staging
-                    # artifact must not silently satisfy the replacement request.
-                    # Discard only the source-scoped staging paths, never target.
-                    temporary.unlink(missing_ok=True)
-                    partial.unlink(missing_ok=True)
-                success = False
-                error = "download failed"
-                for attempt in range(args.retries):
-                    # yt-dlp can resume .part across attempts and subsequent invocations.
-                    # A completed source-specific .download left by interruption can
-                    # be reused, after checking the optional manifest digest.
-                    if temporary.is_file() and temporary.stat().st_size > 0:
-                        if (max_file_bytes is not None
-                                and temporary.stat().st_size > max_file_bytes):
-                            error = "staged file exceeds --max-file-mib"
-                            temporary.unlink()
-                            partial.unlink(missing_ok=True)
-                            break
-                        if ((size_bytes is None or temporary.stat().st_size == size_bytes)
-                                and (expected is None or digest(temporary) == expected)):
-                            if target.is_symlink():
-                                raise ValueError("Destination became symlink")
-                            os.replace(temporary, target)
-                            success = True
-                            break
-                        temporary.unlink()
-                        # The completed artifact failed verification; discard stale
-                        # partial state rather than resuming corrupted bytes.
+        interrupted = False
+        try:
+            for index, ((file_id, name, expected, size_bytes), target) in enumerate(zip(entries, destinations)):
+                status = "failed"
+                error = None
+                try:
+                    # Recheck to reject symlinks introduced after initial validation.
+                    safe_destination(root, name)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    safe_destination(root, name)
+                    if target.is_file() and target.stat().st_size > 0 and not args.force:
+                        if ((size_bytes is None or target.stat().st_size == size_bytes)
+                                and (expected is None or digest(target) == expected)):
+                            print(f"SKIP {name}")
+                            if progress_path is not None:
+                                if not record_progress(progress_path, {
+                                    "id": file_id, "path": name, "status": "skipped"
+                                }):
+                                    journal_failed = True
+                                    progress_path = None
+                            pending.pop((file_id, name))
+                            processed += 1
+                            if args.checkpoint:
+                                write_report(report_path, failures + list(pending.values()))
+                            continue
+                        print(f"REPLACE integrity mismatch: {name}", file=sys.stderr)
+                    temporary, partial = temporary_paths(target, file_id)
+                    if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
+                        raise ValueError("Symlink at target or temporary download")
+                    if args.restart_partials or args.force:
+                        # Force means genuinely fetch again; a completed old staging
+                        # artifact must not silently satisfy the replacement request.
+                        # Discard only the source-scoped staging paths, never target.
+                        temporary.unlink(missing_ok=True)
                         partial.unlink(missing_ok=True)
-                    if reserve_bytes is not None:
-                        # With an exact size, reserve space for the remaining
-                        # bytes as well as the minimum requested free capacity.
-                        partial_bytes = partial.stat().st_size if partial.is_file() else 0
-                        needed = reserve_bytes
-                        if size_bytes is not None:
-                            needed += max(0, size_bytes - partial_bytes)
-                        available = shutil.disk_usage(target.parent).free
-                        if available < needed:
-                            raise ValueError(
-                                f"Insufficient disk space: {available} bytes free, "
-                                f"{needed} required before transfer"
+                    success = False
+                    error = "download failed"
+                    for attempt in range(args.retries):
+                        # yt-dlp can resume .part across attempts and subsequent invocations.
+                        # A completed source-specific .download left by interruption can
+                        # be reused, after checking the optional manifest digest.
+                        if temporary.is_file() and temporary.stat().st_size > 0:
+                            if (max_file_bytes is not None
+                                    and temporary.stat().st_size > max_file_bytes):
+                                error = "staged file exceeds --max-file-mib"
+                                temporary.unlink()
+                                partial.unlink(missing_ok=True)
+                                break
+                            if ((size_bytes is None or temporary.stat().st_size == size_bytes)
+                                    and (expected is None or digest(temporary) == expected)):
+                                if target.is_symlink():
+                                    raise ValueError("Destination became symlink")
+                                os.replace(temporary, target)
+                                success = True
+                                break
+                            temporary.unlink()
+                            # The completed artifact failed verification; discard stale
+                            # partial state rather than resuming corrupted bytes.
+                            partial.unlink(missing_ok=True)
+                        if reserve_bytes is not None:
+                            # With an exact size, reserve space for the remaining
+                            # bytes as well as the minimum requested free capacity.
+                            partial_bytes = partial.stat().st_size if partial.is_file() else 0
+                            needed = reserve_bytes
+                            if size_bytes is not None:
+                                needed += max(0, size_bytes - partial_bytes)
+                            available = shutil.disk_usage(target.parent).free
+                            if available < needed:
+                                raise ValueError(
+                                    f"Insufficient disk space: {available} bytes free, "
+                                    f"{needed} required before transfer"
+                                )
+                        command = [
+                            sys.executable, "-m", "yt_dlp", "--cookies", str(args.cookies),
+                            "--no-playlist", "--continue", "--no-overwrites",
+                            "--format", "best[ext=mp4]/best", "-o", str(temporary),
+                        ]
+                        if args.limit_rate is not None:
+                            command.extend(["--limit-rate", args.limit_rate.upper()])
+                        if args.max_file_mib is not None:
+                            command.extend(["--max-filesize", f"{args.max_file_mib}M"])
+                        command.append(f"https://drive.google.com/file/d/{file_id}/view")
+                        try:
+                            result = subprocess.run(
+                                command, check=False, timeout=args.file_timeout
                             )
-                    command = [
-                        sys.executable, "-m", "yt_dlp", "--cookies", str(args.cookies),
-                        "--no-playlist", "--continue", "--no-overwrites",
-                        "--format", "best[ext=mp4]/best", "-o", str(temporary),
-                    ]
-                    if args.limit_rate is not None:
-                        command.extend(["--limit-rate", args.limit_rate.upper()])
-                    if args.max_file_mib is not None:
-                        command.extend(["--max-filesize", f"{args.max_file_mib}M"])
-                    command.append(f"https://drive.google.com/file/d/{file_id}/view")
-                    try:
-                        result = subprocess.run(
-                            command, check=False, timeout=args.file_timeout
-                        )
-                    except subprocess.TimeoutExpired:
-                        # subprocess.run terminates the timed-out yt-dlp process.
-                        # Retain its .part file so the next attempt can continue.
-                        error = f"yt-dlp timed out after {args.file_timeout:g} seconds"
+                        except subprocess.TimeoutExpired:
+                            # subprocess.run terminates the timed-out yt-dlp process.
+                            # Retain its .part file so the next attempt can continue.
+                            error = f"yt-dlp timed out after {args.file_timeout:g} seconds"
+                            if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
+                                raise ValueError("Symlink introduced during download")
+                            temporary.unlink(missing_ok=True)
+                            if attempt + 1 < args.retries:
+                                time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
+                            continue
                         if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                             raise ValueError("Symlink introduced during download")
-                        temporary.unlink(missing_ok=True)
+                        if max_file_bytes is not None and (
+                            (temporary.is_file() and temporary.stat().st_size > max_file_bytes)
+                            or (partial.is_file() and partial.stat().st_size > max_file_bytes)
+                        ):
+                            error = "download exceeds --max-file-mib"
+                            temporary.unlink(missing_ok=True)
+                            partial.unlink(missing_ok=True)
+                            break
+                        if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size > 0:
+                            if ((size_bytes is None or temporary.stat().st_size == size_bytes)
+                                    and (expected is None or digest(temporary) == expected)):
+                                os.replace(temporary, target)
+                                success = True
+                                break
+                            error = "size_bytes or SHA-256 mismatch"
+                            temporary.unlink()
+                            partial.unlink(missing_ok=True)
+                        else:
+                            error = f"yt-dlp exit status {result.returncode}"
+                            # Do not trust an incomplete non-.part file on retry.
+                            # Retain the resumable .part file produced by yt-dlp.
+                            temporary.unlink(missing_ok=True)
                         if attempt + 1 < args.retries:
                             time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
-                        continue
-                    if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
-                        raise ValueError("Symlink introduced during download")
-                    if max_file_bytes is not None and (
-                        (temporary.is_file() and temporary.stat().st_size > max_file_bytes)
-                        or (partial.is_file() and partial.stat().st_size > max_file_bytes)
-                    ):
-                        error = "download exceeds --max-file-mib"
-                        temporary.unlink(missing_ok=True)
-                        partial.unlink(missing_ok=True)
-                        break
-                    if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size > 0:
-                        if ((size_bytes is None or temporary.stat().st_size == size_bytes)
-                                and (expected is None or digest(temporary) == expected)):
-                            os.replace(temporary, target)
-                            success = True
-                            break
-                        error = "size_bytes or SHA-256 mismatch"
-                        temporary.unlink()
-                        partial.unlink(missing_ok=True)
+                    if success:
+                        status = "downloaded"
+                        print(f"OK   {name}")
                     else:
-                        error = f"yt-dlp exit status {result.returncode}"
-                        # Do not trust an incomplete non-.part file on retry.
-                        # Retain the resumable .part file produced by yt-dlp.
-                        temporary.unlink(missing_ok=True)
-                    if attempt + 1 < args.retries:
-                        time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
-                if success:
-                    status = "downloaded"
-                    print(f"OK   {name}")
-                else:
+                        failures.append({"id": file_id, "path": name, "error": error})
+                        print(f"FAIL {name}: {error}", file=sys.stderr)
+                except (OSError, ValueError) as exc:
+                    error = str(exc)
                     failures.append({"id": file_id, "path": name, "error": error})
-                    print(f"FAIL {name}: {error}", file=sys.stderr)
-            except (OSError, ValueError) as exc:
-                error = str(exc)
-                failures.append({"id": file_id, "path": name, "error": error})
-                print(f"FAIL {name}: {exc}", file=sys.stderr)
-            if progress_path is not None:
-                event = {"id": file_id, "path": name, "status": status}
-                if status == "failed":
-                    event["error"] = error
-                if not record_progress(progress_path, event):
-                    journal_failed = True
-                    progress_path = None
-            pending.pop((file_id, name))
-            processed += 1
-            if args.checkpoint:
-                write_report(report_path, failures + list(pending.values()))
-            if args.max_failures is not None and len(failures) >= args.max_failures:
-                stopped_early = True
-                print(
-                    f"STOP: reached --max-failures={args.max_failures}; "
-                    f"{len(pending)} entries remain pending",
-                    file=sys.stderr
-                )
-                break
-            if args.sleep_between_files and index + 1 < len(entries):
-                time.sleep(args.sleep_between_files)
-        if not args.checkpoint:
+                    print(f"FAIL {name}: {exc}", file=sys.stderr)
+                if progress_path is not None:
+                    event = {"id": file_id, "path": name, "status": status}
+                    if status == "failed":
+                        event["error"] = error
+                    if not record_progress(progress_path, event):
+                        journal_failed = True
+                        progress_path = None
+                pending.pop((file_id, name))
+                processed += 1
+                if args.checkpoint:
+                    write_report(report_path, failures + list(pending.values()))
+                if args.max_failures is not None and len(failures) >= args.max_failures:
+                    stopped_early = True
+                    print(
+                        f"STOP: reached --max-failures={args.max_failures}; "
+                        f"{len(pending)} entries remain pending",
+                        file=sys.stderr
+                    )
+                    break
+                if args.sleep_between_files and index + 1 < len(entries):
+                    time.sleep(args.sleep_between_files)
+        except KeyboardInterrupt:
+            # The current file stays pending, even if it finished just before
+            # interruption; retrying the report will safely skip valid files.
+            interrupted = True
+            print("Interrupted: preserving pending downloads for retry", file=sys.stderr)
+        if interrupted or not args.checkpoint:
             write_report(report_path, failures + list(pending.values()))
+        if interrupted:
+            print(
+                f"Interrupted after {processed}/{len(entries)} entries; "
+                f"{len(pending)} pending, {len(failures)} failed. "
+                f"Retry with --only-failed {report_path}",
+                file=sys.stderr
+            )
+            return 130
         print(
             f"Completed: {processed - len(failures)}/{processed} processed successfully; "
             f"{len(pending)} pending of {len(entries)} selected"
