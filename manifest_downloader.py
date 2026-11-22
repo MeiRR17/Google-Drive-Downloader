@@ -12,6 +12,7 @@ import random
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 FILE_ID = re.compile(r"^[A-Za-z0-9_-]{10,128}$")
@@ -137,10 +138,26 @@ def append_progress(path: Path, event: dict):
 
 
 def write_report(path: Path, failures):
+    """Atomically replace a failure report without using a predictable temp file."""
+    if path.is_symlink():
+        raise ValueError("Failure report must not be a symlink")
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps({"failed": failures}, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=".failed-report-", suffix=".tmp", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            json.dump({"failed": failures}, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+        if path.is_symlink():
+            raise ValueError("Failure report became a symlink")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def main(argv=None):
@@ -149,6 +166,8 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, default=Path("downloads"))
     parser.add_argument("--cookies", type=Path, default=Path("cookies.txt"))
     parser.add_argument("--failed-report", type=Path, default=Path("failed-downloads.json"))
+    parser.add_argument("--checkpoint", action="store_true",
+                        help="Update failure report after each file, including pending entries")
     parser.add_argument("--progress-log", type=Path,
                         help="Append a JSONL record after each download, skip or failure")
     parser.add_argument("--retries", type=int, default=3)
@@ -184,6 +203,8 @@ def main(argv=None):
         parser.error("--verify-only cannot be combined with --force")
     if args.verify_only and args.dry_run:
         parser.error("--verify-only cannot be combined with --dry-run")
+    if args.checkpoint and (args.verify_only or args.dry_run):
+        parser.error("--checkpoint requires a download run")
 
     try:
         entries = load_manifest(args.manifest)
@@ -253,6 +274,12 @@ def main(argv=None):
         parser.error(f"Cookie file not found: {args.cookies}")
     root.mkdir(parents=True, exist_ok=True)
     failures = []
+    pending = {
+        (file_id, name): {"id": file_id, "path": name, "error": "pending"}
+        for file_id, name, _ in entries
+    }
+    if args.checkpoint:
+        write_report(report_path, list(pending.values()))
     for (file_id, name, expected), target in zip(entries, destinations):
         status = "failed"
         error = None
@@ -268,6 +295,9 @@ def main(argv=None):
                         append_progress(progress_path, {
                             "id": file_id, "path": name, "status": "skipped"
                         })
+                    pending.pop((file_id, name))
+                    if args.checkpoint:
+                        write_report(report_path, failures + list(pending.values()))
                     continue
                 print(f"REPLACE checksum mismatch: {name}", file=sys.stderr)
             temporary, partial = temporary_paths(target, file_id)
@@ -342,7 +372,11 @@ def main(argv=None):
             if status == "failed":
                 event["error"] = error
             append_progress(progress_path, event)
-    write_report(args.failed_report, failures)
+        pending.pop((file_id, name))
+        if args.checkpoint:
+            write_report(report_path, failures + list(pending.values()))
+    if not args.checkpoint:
+        write_report(report_path, failures)
     print(f"Completed: {len(entries) - len(failures)}/{len(entries)} entries successful or already present")
     return 1 if failures else 0
 
