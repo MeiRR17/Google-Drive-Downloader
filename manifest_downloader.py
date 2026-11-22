@@ -76,6 +76,44 @@ def digest(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def validate_manifest_namespace(entries):
+    """Reject file/directory and staging collisions before any batch filtering.
+
+    Paths are compared using portable, NFC-normalized case-insensitive names,
+    including the source-specific .download and .part staging namespaces.
+    """
+    occupied = {}
+    for index, (file_id, name, _, _) in enumerate(entries, 1):
+        normalized = validate_relative_path(name)
+        token = hashlib.sha256(file_id.encode("ascii")).hexdigest()[:16]
+        for kind, candidate in (
+            ("destination", normalized),
+            ("temporary download", normalized + "." + token + ".download"),
+            ("partial download", normalized + "." + token + ".download.part"),
+        ):
+            key = unicodedata.normalize("NFC", candidate).casefold()
+            previous = occupied.get(key)
+            if previous is not None:
+                raise ValueError(
+                    f"Entry {index}: {kind} {candidate!r} conflicts with {previous}"
+                )
+            occupied[key] = f"entry {index} {kind} {candidate!r}"
+
+    lock_key = ".manifest-downloader.lock"
+    if lock_key in occupied:
+        raise ValueError(f"Manifest conflicts with reserved downloader lock: {occupied[lock_key]}")
+
+    for key, description in occupied.items():
+        components = key.split("/")
+        for depth in range(1, len(components)):
+            parent = "/".join(components[:depth])
+            if parent in occupied:
+                raise ValueError(
+                    f"File/directory collision: {description} is nested under "
+                    f"{occupied[parent]}"
+                )
+
+
 def load_manifest(path: Path):
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("files"), list):
@@ -104,6 +142,7 @@ def load_manifest(path: Path):
             raise ValueError(f"Entry {index}: duplicate destination {name!r}")
         destinations.add(key)
         result.append((file_id, name, checksum.lower() if checksum else None, size_bytes))
+    validate_manifest_namespace(result)
     return result
 
 
