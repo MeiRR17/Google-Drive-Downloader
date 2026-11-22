@@ -370,3 +370,15 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 
 `--only-failed` still validates every ID/path pair against the current manifest. Checkpointing is opt-in because it writes the JSON report after each file; `--dry-run` and `--verify-only` cannot use it. The report reflects completed per-file updates and may lag the current in-flight transfer by one entry. It is not a substitute for a trusted SHA-256 digest.
 
+### Limit bandwidth and pace large batches
+
+The manifest downloader supports optional network throttling without affecting existing default behavior:
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --limit-rate 2M --sleep-between-files 3 --checkpoint
+```
+
+`--limit-rate` forwards a yt-dlp transfer cap specified as a positive whole number of bytes per second with an optional `K`, `M`, or `G` suffix (for example, `500K` or `2M`). `--sleep-between-files` sets a finite non-negative number of seconds to pause between attempted manifest entries. The delay is applied after processing an entry, before the next selected entry, including entries that fail. Already-present files skipped without a download do not add a delay. Neither option changes checksum verification, resume handling, or retry backoff.
+
+Use these options to reduce connection pressure during large course downloads. They do not guarantee that Google Drive will avoid rate limiting, and they do not override server-side quota restrictions.
+
