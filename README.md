@@ -218,7 +218,7 @@ python -m pip install yt-dlp
 python manifest_downloader.py manifest.json --output downloads --cookies cookies.txt --retries 3 --backoff 2
 ```
 
-The downloader creates destination directories, skips existing non-empty files (or verifies them first when SHA-256 is supplied), retries failed transfers, and records failures in `failed-downloads.json`. It exits with status 1 if any entry fails. Downloads first write to a temporary `.download` file and replace the destination only after successful completion and optional checksum verification. yt-dlp retains an associated `.download.part` file after interrupted transfers, allowing later runs to resume supported transfers. Completed temporary files left behind after interruption are reused only after optional checksum validation.
+The downloader creates destination directories, skips existing non-empty files (or verifies them first when SHA-256 is supplied), retries failed transfers, and records failures in `failed-downloads.json`. It exits with status 1 if any entry fails. Downloads first write to a temporary `.<source-token>.download` file and replace the destination only after successful completion and optional checksum verification. yt-dlp retains an associated `.<source-token>.download.part` file after interrupted transfers, allowing later runs to resume supported transfers. Completed temporary files left behind after interruption are reused only after optional checksum validation.
 
 Manifest paths must be relative to the output root. Absolute paths, parent traversal (`..`), repeated separators, duplicate destinations (case-insensitive), and symlinks within the output path are rejected. Keep the cookie file outside version control. This command assumes Python 3.9 or newer and a working yt-dlp installation; no tests have been run for this new entry point yet.
 
@@ -271,7 +271,7 @@ Use quotes around patterns so your shell does not expand them. Paths use forward
 
 ### Resume interrupted downloads or replace existing files
 
-By default, the manifest downloader skips non-empty destination files, optionally checking the SHA-256 field. If a transfer is interrupted, yt-dlp's partial `.download.part` data is retained, and the next invocation can resume the transfer when the remote server supports range requests. The completed destination is replaced only once the new download finishes and any configured SHA-256 check succeeds.
+By default, the manifest downloader skips non-empty destination files, optionally checking the SHA-256 field. If a transfer is interrupted, yt-dlp's partial `.<source-token>.download.part` data is retained, and the next invocation can resume the transfer when the remote server supports range requests. The completed destination is replaced only once the new download finishes and any configured SHA-256 check succeeds.
 
 To deliberately re-download matching entries even when a non-empty destination already exists:
 
@@ -279,5 +279,18 @@ To deliberately re-download matching entries even when a non-empty destination a
 python manifest_downloader.py manifest.json --output University_Course_Data --cookies cookies.txt --force --include '01-Linux/*'
 ```
 
-The `--force` option applies only to the selected entries and preserves existing destination files until a replacement is ready. It does not bypass SHA-256 verification. To restart a specific transfer from zero rather than resume, remove that file's `.download.part` temporary file while the downloader is **not** running. Avoid running multiple copies of the downloader against the same output paths concurrently.
+The `--force` option applies only to the selected entries and preserves existing destination files until a replacement is ready. It does not bypass SHA-256 verification. To restart a specific transfer from zero rather than resume, remove that file's `.<source-token>.download.part` temporary file while the downloader is **not** running. Avoid running multiple copies of the downloader against the same output paths concurrently.
 
+
+### Audit local files without downloading
+
+Use `--verify-only` to inspect the selected output files offline. This mode does not require `cookies.txt`, does not create directories or reports, and does not contact Google Drive.
+
+```bash
+python manifest_downloader.py manifest.json --output University_Course_Data --verify-only
+python manifest_downloader.py manifest.json --output University_Course_Data --verify-only --include '01-Linux/*'
+```
+
+The command exits with status 0 when every selected destination is a non-empty regular file and all declared SHA-256 digests match. Missing files, empty files, and digest mismatches are printed as `INVALID` and cause exit status 1. Without a manifest SHA-256, the audit establishes only that the local file exists and is non-empty; it cannot prove that its contents match Google Drive.
+
+For safe resume, temporary transfer filenames include a deterministic token derived from the Google Drive file ID. This avoids accidentally reusing a temporary file from another Drive source if two manifests assign different source IDs to the same output name. These staging filenames are implementation details and may be removed manually only when the downloader is stopped.
