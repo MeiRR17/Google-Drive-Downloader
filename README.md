@@ -400,3 +400,9 @@ python manifest_downloader.py manifest.json --output University_Course_Data --co
 
 When no failure limit is provided, the downloader continues through all selected entries as before. `--max-failures` must be a positive integer.
 
+### Portable manifest filename rules
+
+The manifest downloader and the legacy course-list exporter validate destination names for portability across macOS, Linux and Windows. Path separators may be written with `/` or `\\` in the manifest, but the downloader interprets both as directory separators. It rejects absolute paths, parent-directory traversal, empty segments, control characters, Windows-reserved characters (`< > : " | ? *`), device names such as `CON`, `NUL`, `COM1` and `LPT1` (including names with extensions), and components ending in a space or period.
+
+Duplicate detection is case-insensitive and applies Unicode NFC normalization. For example, filenames whose accented characters have canonically equivalent Unicode encodings are treated as collisions. If an existing legacy course filename violates these rules, rename the path in the source course mapping or in a new manifest before using the opt-in downloader. The original `auto_downloader.py` script is unaffected.
+
