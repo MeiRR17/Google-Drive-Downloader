@@ -23,11 +23,20 @@ def enrich_manifest(manifest: Path, root: Path, skip_missing: bool):
     updated = 0
     confirmed = 0
     missing = []
-    for entry, (file_id, path, existing) in zip(document["files"], validated):
+    for entry, (file_id, path, existing, expected_size) in zip(document["files"], validated):
         destination = safe_destination(root, path)
         if not destination.is_file() or destination.stat().st_size == 0:
             missing.append(path)
             continue
+        actual_size = destination.stat().st_size
+        if expected_size is not None:
+            if actual_size != expected_size:
+                raise ValueError(
+                    f"Existing size_bytes does not match local file: {path!r}; "
+                    "refusing to replace the expected size"
+                )
+        else:
+            entry["size_bytes"] = actual_size
         actual = digest(destination)
         if existing is not None:
             if actual != existing:
