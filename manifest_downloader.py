@@ -226,6 +226,8 @@ def main(argv=None):
                         help="Maximum wall-clock seconds per yt-dlp attempt")
     parser.add_argument("--limit-rate", metavar="RATE",
                         help="Limit yt-dlp transfer speed, e.g. 500K or 2M bytes/second")
+    parser.add_argument("--max-file-mib", type=int, metavar="MIB",
+                        help="Reject downloads larger than MIB mebibytes (1 MiB = 1048576 bytes)")
     parser.add_argument("--sleep-between-files", type=float, default=0.0,
                         metavar="SECONDS",
                         help="Pause between attempted files to reduce request pressure")
@@ -256,6 +258,9 @@ def main(argv=None):
         parser.error("--offset must be >= 0")
     if args.max_failures is not None and args.max_failures < 1:
         parser.error("--max-failures must be >= 1")
+    if args.max_file_mib is not None and args.max_file_mib < 1:
+        parser.error("--max-file-mib must be >= 1")
+    max_file_bytes = args.max_file_mib * 1024 * 1024 if args.max_file_mib else None
     if args.file_timeout is not None and not (0 < args.file_timeout < float("inf")):
         parser.error("--file-timeout must be a finite positive number")
     if args.limit_rate is not None and not RATE_LIMIT.fullmatch(args.limit_rate):
@@ -388,6 +393,12 @@ def main(argv=None):
                     # A completed source-specific .download left by interruption can
                     # be reused, after checking the optional manifest digest.
                     if temporary.is_file() and temporary.stat().st_size > 0:
+                        if (max_file_bytes is not None
+                                and temporary.stat().st_size > max_file_bytes):
+                            error = "staged file exceeds --max-file-mib"
+                            temporary.unlink()
+                            partial.unlink(missing_ok=True)
+                            break
                         if expected is None or digest(temporary) == expected:
                             if target.is_symlink():
                                 raise ValueError("Destination became symlink")
@@ -405,6 +416,8 @@ def main(argv=None):
                     ]
                     if args.limit_rate is not None:
                         command.extend(["--limit-rate", args.limit_rate.upper()])
+                    if args.max_file_mib is not None:
+                        command.extend(["--max-filesize", f"{args.max_file_mib}M"])
                     command.append(f"https://drive.google.com/file/d/{file_id}/view")
                     try:
                         result = subprocess.run(
@@ -422,6 +435,14 @@ def main(argv=None):
                         continue
                     if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                         raise ValueError("Symlink introduced during download")
+                    if max_file_bytes is not None and (
+                        (temporary.is_file() and temporary.stat().st_size > max_file_bytes)
+                        or (partial.is_file() and partial.stat().st_size > max_file_bytes)
+                    ):
+                        error = "download exceeds --max-file-mib"
+                        temporary.unlink(missing_ok=True)
+                        partial.unlink(missing_ok=True)
+                        break
                     if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size > 0:
                         if expected is None or digest(temporary) == expected:
                             os.replace(temporary, target)
