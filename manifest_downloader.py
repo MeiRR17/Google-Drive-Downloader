@@ -358,31 +358,24 @@ def record_progress(path: Path, event: dict) -> bool:
     return True
 
 
-def write_report(path: Path, failures, manifest_sha256, *, durable=False):
-    """Atomically replace a failure report, optionally syncing it to storage.
-
-    In durable mode sync the temporary file before replacement, then fsync the
-    containing directory on POSIX to persist the rename where supported.
-    """
-    safe_artifact_path(path, "Failure report")
+def write_json_document(path: Path, document: dict, *, label: str, durable=False):
+    """Atomically replace metadata JSON with optional crash-durability syncs."""
+    safe_artifact_path(path, label)
     path.parent.mkdir(parents=True, exist_ok=True)
-    safe_artifact_path(path, "Failure report")
+    safe_artifact_path(path, label)
     temporary = None
     try:
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", dir=path.parent,
-            prefix=".failed-report-", suffix=".tmp", delete=False
+            prefix=".manifest-report-", suffix=".tmp", delete=False
         ) as stream:
             temporary = Path(stream.name)
-            json.dump(
-                {"manifest_sha256": manifest_sha256, "failed": failures},
-                stream, ensure_ascii=False, indent=2
-            )
+            json.dump(document, stream, ensure_ascii=False, indent=2)
             stream.write("\n")
             stream.flush()
             if durable:
                 os.fsync(stream.fileno())
-        safe_artifact_path(path, "Failure report")
+        safe_artifact_path(path, label)
         os.replace(temporary, path)
         if durable and os.name == "posix":
             directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
@@ -393,6 +386,14 @@ def write_report(path: Path, failures, manifest_sha256, *, durable=False):
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
+
+
+def write_report(path: Path, failures, manifest_sha256, *, durable=False):
+    """Persist a manifest-bound recovery report."""
+    write_json_document(
+        path, {"manifest_sha256": manifest_sha256, "failed": failures},
+        label="Failure report", durable=durable
+    )
 
 
 @contextmanager
@@ -435,6 +436,8 @@ def main(argv=None):
                         help="fsync recovery reports before rename and sync parent directory on POSIX")
     parser.add_argument("--progress-log", type=Path,
                         help="Append a JSONL record after each download, skip or failure")
+    parser.add_argument("--summary-json", type=Path, metavar="PATH",
+                        help="Write a machine-readable JSON summary after a download batch")
     parser.add_argument("--retries", type=int, default=3)
     parser.add_argument("--max-failures", type=int, metavar="N",
                         help="Stop after N failed files and retain the remaining retry list")
@@ -526,6 +529,8 @@ def main(argv=None):
         parser.error("--checkpoint requires a download run")
     if args.durable_reports and (args.verify_only or args.dry_run):
         parser.error("--durable-reports requires a download run")
+    if args.summary_json is not None and (args.verify_only or args.dry_run):
+        parser.error("--summary-json requires a download run")
     if args.reconcile_failed and args.only_failed is None:
         parser.error("--reconcile-failed requires --only-failed REPORT")
 
@@ -535,6 +540,7 @@ def main(argv=None):
         root = args.output.absolute()
         report_path = args.failed_report.absolute()
         progress_path = args.progress_log.absolute() if args.progress_log else None
+        summary_path = args.summary_json.absolute() if args.summary_json else None
         manifest_path = args.manifest.absolute()
         cookie_path = args.cookies.absolute() if not args.no_cookies else None
         failed_input_path = args.only_failed.absolute() if args.only_failed else None
@@ -543,6 +549,7 @@ def main(argv=None):
             ("Cookies", cookie_path),
             ("Failure report", report_path),
             ("Progress log", progress_path),
+            ("Batch summary", summary_path),
             ("Retry input", failed_input_path),
         ])
         if args.only_failed is not None:
@@ -569,6 +576,8 @@ def main(argv=None):
                 or report_path in (args.manifest.absolute(), args.cookies.absolute())):
             raise ValueError("Failure report conflicts with an input or download")
         safe_artifact_path(report_path, "Failure report")
+        if summary_path is not None:
+            safe_artifact_path(summary_path, "Batch summary")
         if progress_path is not None:
             safe_artifact_path(progress_path, "Progress log")
             if (progress_path in destinations
@@ -651,6 +660,8 @@ def main(argv=None):
         started_at = time.monotonic()
         downloaded_bytes = 0
         downloaded_files = 0
+        skipped_files = 0
+        stop_reason = None
         journal_failed = False
         interrupted = False
         try:
@@ -658,6 +669,7 @@ def main(argv=None):
                 if (args.max_run_seconds is not None
                         and time.monotonic() - started_at >= args.max_run_seconds):
                     stopped_time = True
+                    stop_reason = "time_budget"
                     print(
                         f"STOP: batch time budget of {args.max_run_seconds:g} seconds reached",
                         file=sys.stderr
@@ -681,6 +693,7 @@ def main(argv=None):
                                     journal_failed = True
                                     progress_path = None
                             consecutive_failures = 0
+                            skipped_files += 1
                             pending.pop((file_id, name))
                             processed += 1
                             if args.checkpoint:
@@ -698,6 +711,7 @@ def main(argv=None):
                     # skipping of already verified local destinations.
                     if args.max_new_files is not None and downloaded_files >= args.max_new_files:
                         stopped_budget = True
+                        stop_reason = "new_file_budget"
                         print(
                             f"STOP: reached --max-new-files={args.max_new_files}; "
                             f"{len(pending)} entries remain pending",
@@ -706,11 +720,13 @@ def main(argv=None):
                         break
                     if budget_bytes is not None and downloaded_bytes >= budget_bytes:
                         stopped_budget = True
+                        stop_reason = "byte_budget"
                         print("STOP: download byte budget reached", file=sys.stderr)
                         break
                     if (budget_bytes is not None and size_bytes is not None
                             and size_bytes > budget_bytes - downloaded_bytes):
                         stopped_budget = True
+                        stop_reason = "byte_budget"
                         print(
                             f"STOP: {name} requires {size_bytes} bytes; "
                             f"{budget_bytes - downloaded_bytes} remain in batch budget",
@@ -851,6 +867,7 @@ def main(argv=None):
                                  durable=args.durable_reports)
                 if args.max_failures is not None and len(failures) >= args.max_failures:
                     stopped_early = True
+                    stop_reason = "failure_limit"
                     print(
                         f"STOP: reached --max-failures={args.max_failures}; "
                         f"{len(pending)} entries remain pending",
@@ -860,6 +877,7 @@ def main(argv=None):
                 if (args.max_consecutive_failures is not None
                         and consecutive_failures >= args.max_consecutive_failures):
                     stopped_early = True
+                    stop_reason = "consecutive_failure_limit"
                     print(
                         f"STOP: {consecutive_failures} consecutive failures; "
                         f"{len(pending)} entries remain pending",
@@ -872,10 +890,37 @@ def main(argv=None):
             # The current file stays pending, even if it finished just before
             # interruption; retrying the report will safely skip valid files.
             interrupted = True
+            stop_reason = "interrupted"
             print("Interrupted: preserving pending downloads for retry", file=sys.stderr)
         if interrupted or stopped_budget or stopped_time or not args.checkpoint:
             write_report(report_path, failures + list(pending.values()), manifest_sha256,
                                  durable=args.durable_reports)
+        exit_code = (
+            130 if interrupted else
+            1 if failures or stopped_early or stopped_budget or stopped_time or journal_failed
+            else 0
+        )
+        if summary_path is not None:
+            write_json_document(
+                summary_path,
+                {
+                    "manifest_sha256": manifest_sha256,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "selected": len(entries),
+                    "processed": processed,
+                    "downloaded": downloaded_files,
+                    "skipped": skipped_files,
+                    "failed": len(failures),
+                    "pending": len(pending),
+                    "downloaded_bytes": downloaded_bytes,
+                    "elapsed_seconds": round(time.monotonic() - started_at, 3),
+                    "stop_reason": stop_reason,
+                    "progress_log_failed": journal_failed,
+                    "exit_code": exit_code,
+                },
+                label="Batch summary",
+                durable=args.durable_reports,
+            )
         if interrupted:
             print(
                 f"Interrupted after {processed}/{len(entries)} entries; "
@@ -889,7 +934,7 @@ def main(argv=None):
             f"{len(pending)} pending of {len(entries)} selected; "
             f"{downloaded_files} new files, {downloaded_bytes} new bytes completed"
         )
-        return 1 if failures or stopped_early or stopped_budget or stopped_time or journal_failed else 0
+        return exit_code
 
 
 if __name__ == "__main__":
