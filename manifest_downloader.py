@@ -80,7 +80,10 @@ def failed_entries(report_path: Path, entries):
     for index, item in enumerate(data["failed"], 1):
         if not isinstance(item, dict):
             raise ValueError(f"Failure report entry {index} must be an object")
-        pair = (item.get("id"), item.get("path"))
+        file_id, path = item.get("id"), item.get("path")
+        if not isinstance(file_id, str) or not isinstance(path, str):
+            raise ValueError(f"Failure report entry {index} must include string id and path")
+        pair = (file_id, path)
         if pair not in known:
             raise ValueError(f"Failure report entry {index} does not match the manifest")
         selected.add(pair)
@@ -118,15 +121,16 @@ def main(argv=None):
         root = args.output.absolute()
         destinations = [safe_destination(root, name) for _, name, _ in entries]
         report_path = args.failed_report.absolute()
-        if report_path == root or report_path in destinations:
-            raise ValueError("Failure report must not overwrite a download")
+        if (report_path == root or report_path in destinations
+                or report_path in (args.manifest.absolute(), args.cookies.absolute())):
+            raise ValueError("Failure report conflicts with an input or download")
         if report_path.is_symlink():
             raise ValueError("Failure report must not be a symlink")
         if args.only_failed and args.only_failed.absolute() == report_path and not args.dry_run:
             raise ValueError("Use a different --failed-report when retrying failures")
-        for target in destinations:
-            if report_path == target.with_name(target.name + ".download"):
-                raise ValueError("Failure report conflicts with a temporary download")
+        temporary_paths = {target.with_name(target.name + ".download") for target in destinations}
+        if report_path in temporary_paths or any(target in temporary_paths for target in destinations):
+            raise ValueError("Temporary download path conflicts with a manifest entry or report")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(str(exc))
 
