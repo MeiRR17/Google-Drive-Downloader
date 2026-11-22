@@ -550,3 +550,15 @@ Paths supplied through `--failed-report` and `--progress-log` are treated as met
 
 Use ordinary directories rather than symlinked aliases for report and journal storage. This is a defense against accidental path redirection; it is not an atomic guarantee against a malicious process changing filesystem paths concurrently. If a report cannot be written, the downloader raises an error rather than silently redirecting the report to another location. The progress journal still has its separate non-fatal write-error handling described above.
 
+### Stop batches after consecutive failures
+
+Use `--max-consecutive-failures N` to stop an unhealthy batch after `N` files fail in a row:
+
+```bash
+python manifest_downloader.py manifest.json --output downloads --cookies cookies.txt --max-consecutive-failures 3 --checkpoint
+```
+
+This example stops after three consecutive failed manifest entries. A successful download **or a skipped existing file that passes the integrity checks** resets the consecutive-failure counter to zero. Multiple yt-dlp retry attempts for one file count as **one file failure**, not multiple consecutive failures. This is useful when credentials expire or many Google Drive links become unavailable.
+
+The threshold applies to individual file outcomes; optional progress-log failures do not count as download failures. Unattempted entries remain marked `pending` in the failure report, and the command exits with status `1`. `--max-failures` remains available as a separate **cumulative failure limit**; whichever threshold is reached first stops the batch. Both flags require a positive integer. By default, neither limit is applied.
+
