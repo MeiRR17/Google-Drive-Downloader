@@ -109,6 +109,26 @@ def digest(path: Path) -> str:
     return hasher.hexdigest()
 
 
+def file_integrity_error(path: Path, expected_checksum, expected_size):
+    """Describe a local file's first integrity failure; None means valid.
+
+    Size is checked before hashing so a known length mismatch needs no I/O
+    beyond stat, and all download paths apply the same acceptance rules.
+    """
+    if not path.is_file():
+        return "missing or non-regular file"
+    actual_size = path.stat().st_size
+    if actual_size == 0:
+        return "missing or empty"
+    if expected_size is not None and actual_size != expected_size:
+        return f"size_bytes mismatch: expected {expected_size}, got {actual_size}"
+    if expected_checksum is not None:
+        actual_digest = digest(path)
+        if actual_digest != expected_checksum:
+            return f"SHA-256 mismatch: expected {expected_checksum}, got {actual_digest}"
+    return None
+
+
 def validate_manifest_namespace(entries):
     """Reject file/directory and staging collisions before any batch filtering.
 
@@ -671,13 +691,8 @@ def main(argv=None):
         for (file_id, name, expected, size_bytes), target in zip(entries, destinations):
             try:
                 safe_destination(root, name)
-                if not target.is_file() or target.stat().st_size == 0:
-                    error = "missing or empty"
-                elif size_bytes is not None and target.stat().st_size != size_bytes:
-                    error = "size_bytes mismatch"
-                elif expected is not None and digest(target) != expected:
-                    error = "SHA-256 mismatch"
-                else:
+                error = file_integrity_error(target, expected, size_bytes)
+                if error is None:
                     print(f"VALID {name}" + (" [SHA-256]" if expected else " [non-empty]"))
                     continue
             except OSError as exc:
@@ -732,9 +747,9 @@ def main(argv=None):
                     safe_destination(root, name)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     safe_destination(root, name)
-                    if target.is_file() and target.stat().st_size > 0 and not args.force:
-                        if ((size_bytes is None or target.stat().st_size == size_bytes)
-                                and (expected is None or digest(target) == expected)):
+                    if not args.force and target.is_file():
+                        destination_error = file_integrity_error(target, expected, size_bytes)
+                        if destination_error is None:
                             print(f"SKIP {name}")
                             if progress_path is not None:
                                 if not record_progress(progress_path, {
@@ -750,7 +765,7 @@ def main(argv=None):
                                 write_report(report_path, failures + list(pending.values()), manifest_sha256,
                                  durable=args.durable_reports)
                             continue
-                        print(f"REPLACE integrity mismatch: {name}", file=sys.stderr)
+                        print(f"REPLACE {destination_error}: {name}", file=sys.stderr)
                     # Reject impossible manifest sizes without starting yt-dlp.
                     if max_file_bytes is not None and size_bytes is not None and size_bytes > max_file_bytes:
                         raise ValueError(
@@ -817,13 +832,17 @@ def main(argv=None):
                                 temporary.unlink()
                                 partial.unlink(missing_ok=True)
                                 break
-                            if ((size_bytes is None or temporary.stat().st_size == size_bytes)
-                                    and (expected is None or digest(temporary) == expected)):
+                            stage_error = file_integrity_error(
+                                temporary, expected, size_bytes
+                            )
+                            if stage_error is None:
                                 if target.is_symlink():
                                     raise ValueError("Destination became symlink")
                                 os.replace(temporary, target)
                                 success = True
                                 break
+                            print(f"DISCARD invalid staged file {name}: {stage_error}",
+                                  file=sys.stderr)
                             temporary.unlink()
                             # The completed artifact failed verification; discard stale
                             # partial state rather than resuming corrupted bytes.
@@ -925,12 +944,11 @@ def main(argv=None):
                             partial.unlink(missing_ok=True)
                             break
                         if result.returncode == 0 and temporary.is_file() and temporary.stat().st_size > 0:
-                            if ((size_bytes is None or temporary.stat().st_size == size_bytes)
-                                    and (expected is None or digest(temporary) == expected)):
+                            error = file_integrity_error(temporary, expected, size_bytes)
+                            if error is None:
                                 os.replace(temporary, target)
                                 success = True
                                 break
-                            error = "size_bytes or SHA-256 mismatch"
                             temporary.unlink()
                             partial.unlink(missing_ok=True)
                         else:
