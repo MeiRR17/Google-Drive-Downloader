@@ -361,6 +361,25 @@ def discard_oversized_partial(temporary: Path, partial: Path, expected_size, max
     return error
 
 
+def batch_time_remaining(started_at: float, max_run_seconds):
+    """Return None for an unlimited run, otherwise time left on its deadline."""
+    if max_run_seconds is None:
+        return None
+    return max_run_seconds - (time.monotonic() - started_at)
+
+
+def sleep_with_batch_deadline(delay: float, started_at: float, max_run_seconds) -> bool:
+    """Pause no longer than the batch deadline; return false when it expires."""
+    remaining = batch_time_remaining(started_at, max_run_seconds)
+    if remaining is None:
+        time.sleep(delay)
+        return True
+    if remaining <= 0:
+        return False
+    time.sleep(min(delay, remaining))
+    return batch_time_remaining(started_at, max_run_seconds) > 0
+
+
 def retry_delay(backoff: float, attempt: int, maximum: float) -> float:
     """Bound exponential retry waits, including jitter, without overflow."""
     if backoff == 0:
@@ -697,8 +716,8 @@ def main(argv=None):
         interrupted = False
         try:
             for index, ((file_id, name, expected, size_bytes), target) in enumerate(zip(entries, destinations)):
-                if (args.max_run_seconds is not None
-                        and time.monotonic() - started_at >= args.max_run_seconds):
+                remaining = batch_time_remaining(started_at, args.max_run_seconds)
+                if remaining is not None and remaining <= 0:
                     stopped_time = True
                     stop_reason = "time_budget"
                     print(
@@ -775,6 +794,13 @@ def main(argv=None):
                     success = False
                     error = "download failed"
                     for attempt in range(args.retries):
+                        remaining = batch_time_remaining(started_at, args.max_run_seconds)
+                        if remaining is not None and remaining <= 0:
+                            stopped_time = True
+                            stop_reason = "time_budget"
+                            print("STOP: batch time budget reached during retries",
+                                  file=sys.stderr)
+                            break
                         validate_staging_paths(target, temporary, partial)
                         error = discard_oversized_partial(
                             temporary, partial, size_bytes, max_file_bytes
@@ -840,15 +866,28 @@ def main(argv=None):
                         if args.max_file_mib is not None:
                             command.extend(["--max-filesize", f"{args.max_file_mib}M"])
                         command.append(f"https://drive.google.com/file/d/{file_id}/view")
+                        remaining = batch_time_remaining(started_at, args.max_run_seconds)
+                        if remaining is not None and remaining <= 0:
+                            stopped_time = True
+                            stop_reason = "time_budget"
+                            print("STOP: batch time budget reached before transfer",
+                                  file=sys.stderr)
+                            break
+                        attempt_timeout = args.file_timeout
+                        if remaining is not None:
+                            attempt_timeout = (
+                                min(attempt_timeout, remaining)
+                                if attempt_timeout is not None else remaining
+                            )
                         transfer_attempts += 1
                         try:
                             result = subprocess.run(
-                                command, check=False, timeout=args.file_timeout
+                                command, check=False, timeout=attempt_timeout
                             )
                         except subprocess.TimeoutExpired:
                             # subprocess.run terminates the timed-out yt-dlp process.
                             # Retain its .part file so the next attempt can continue.
-                            error = f"yt-dlp timed out after {args.file_timeout:g} seconds"
+                            error = f"yt-dlp timed out after {attempt_timeout:g} seconds"
                             validate_staging_paths(target, temporary, partial)
                             temporary.unlink(missing_ok=True)
                             oversized = discard_oversized_partial(
@@ -857,11 +896,24 @@ def main(argv=None):
                             if oversized is not None:
                                 error = oversized
                                 break
+                            remaining = batch_time_remaining(started_at, args.max_run_seconds)
+                            if remaining is not None and remaining <= 0:
+                                stopped_time = True
+                                stop_reason = "time_budget"
+                                print("STOP: batch deadline reached during transfer",
+                                      file=sys.stderr)
+                                break
                             if attempt + 1 < args.retries and (
                                 args.max_transfer_attempts is None
                                 or transfer_attempts < args.max_transfer_attempts
                             ):
-                                time.sleep(retry_delay(args.backoff, attempt, args.max_backoff))
+                                if not sleep_with_batch_deadline(
+                                    retry_delay(args.backoff, attempt, args.max_backoff),
+                                    started_at, args.max_run_seconds
+                                ):
+                                    stopped_time = True
+                                    stop_reason = "time_budget"
+                                    break
                             continue
                         validate_staging_paths(target, temporary, partial)
                         if max_file_bytes is not None and (
@@ -890,10 +942,17 @@ def main(argv=None):
                             args.max_transfer_attempts is None
                             or transfer_attempts < args.max_transfer_attempts
                         ):
-                            time.sleep(retry_delay(args.backoff, attempt, args.max_backoff))
-                    if stopped_budget and stop_reason == "transfer_attempt_budget":
-                        # Do not classify the interrupted entry as a failure;
-                        # leave it pending for the next batch invocation.
+                            if not sleep_with_batch_deadline(
+                                retry_delay(args.backoff, attempt, args.max_backoff),
+                                started_at, args.max_run_seconds
+                            ):
+                                stopped_time = True
+                                stop_reason = "time_budget"
+                                break
+                    if stopped_time or (stopped_budget and
+                                        stop_reason == "transfer_attempt_budget"):
+                        # A batch deadline or attempt cap preserves the current
+                        # entry as pending instead of recording a file failure.
                         break
                     if success:
                         status = "downloaded"
@@ -940,7 +999,12 @@ def main(argv=None):
                     )
                     break
                 if args.sleep_between_files and index + 1 < len(entries):
-                    time.sleep(args.sleep_between_files)
+                    if not sleep_with_batch_deadline(
+                        args.sleep_between_files, started_at, args.max_run_seconds
+                    ):
+                        stopped_time = True
+                        stop_reason = "time_budget"
+                        break
         except KeyboardInterrupt:
             # The current file stays pending, even if it finished just before
             # interruption; retrying the report will safely skip valid files.
