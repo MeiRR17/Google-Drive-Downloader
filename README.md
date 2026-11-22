@@ -544,3 +544,9 @@ This example runs the batch for approximately one hour, measured with a monotoni
 
 `--max-run-seconds` must be a finite positive number. It does not terminate a download or retry sequence already in progress, so total elapsed time can exceed the configured limit. Combine it with `--file-timeout` to bound individual yt-dlp attempts, or `--max-total-mib` to separately limit completed download bytes. When omitted, batch runtime is unrestricted.
 
+### Safe failure-report and progress-log destinations
+
+Paths supplied through `--failed-report` and `--progress-log` are treated as metadata output files. The downloader refuses these paths if the destination itself is a symbolic link or directory, or if an existing parent directory in the path is a symbolic link. It checks the paths before starting the batch and checks again before creating directories or writing metadata.
+
+Use ordinary directories rather than symlinked aliases for report and journal storage. This is a defense against accidental path redirection; it is not an atomic guarantee against a malicious process changing filesystem paths concurrently. If a report cannot be written, the downloader raises an error rather than silently redirecting the report to another location. The progress journal still has its separate non-fatal write-error handling described above.
+
