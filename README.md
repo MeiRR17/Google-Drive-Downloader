@@ -653,3 +653,18 @@ The downloader continues to atomically replace the recovery report using a uniqu
 
 The flag applies to **every** recovery-report write, including the final report, whether or not `--checkpoint` is enabled. With `--checkpoint`, it adds synchronization overhead after each processed file and may reduce throughput, especially on network or slow drives. If a requested sync fails, the operation reports the underlying filesystem error instead of silently claiming a durable checkpoint. It does not synchronize downloaded media, the progress JSONL journal, or the lock file. `--durable-reports` cannot be combined with `--dry-run` or `--verify-only`.
 
+### Limit the number of newly completed files per batch
+
+Use `--max-new-files N` to cap the count of newly completed files without counting already valid local destinations:
+
+```bash
+python manifest_downloader.py manifest.json --output downloads \
+  --cookies cookies.txt --max-new-files 25 --checkpoint
+```
+
+This example allows at most 25 new file completions in one batch. Existing destinations that pass their configured `sha256` and `size_bytes` checks are skipped without consuming the count. Successful promotions of a previously completed source-scoped staging file **do count**, even if no new network transfer was necessary. With `--force`, destinations are redownloaded rather than skipped and each successfully completed replacement counts.
+
+When the configured count has been reached, the downloader can still recognize further already valid destinations until it encounters a file requiring a new download. It then stops before starting that file, retains it and all subsequent unfinished entries as `pending` in the recovery report, and returns exit status `1`. Use `--only-failed` with a different report output path to continue. The flag requires a positive integer; without it the new-file count is unlimited.
+
+Unlike `--limit`, which caps the number of manifest entries **selected** (including existing skips), `--max-new-files` caps successfully **completed new files**. You can combine it with `--max-total-mib`, `--max-run-seconds`, and failure thresholds; the earliest reached stopping condition determines when the batch ends. Failed file attempts do not count toward `--max-new-files`.
+
