@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import fnmatch
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -204,6 +205,17 @@ def append_progress(path: Path, event: dict):
         stream.flush()
 
 
+def retry_delay(backoff: float, attempt: int, maximum: float) -> float:
+    """Bound exponential retry waits, including jitter, without overflow."""
+    if backoff == 0:
+        return min(maximum, random.uniform(0, 0.5))
+    if backoff >= maximum:
+        return maximum
+    # Once the exponential reaches the cap, avoid unbounded integers.
+    exponent = min(attempt, 60)
+    return min(maximum, backoff * (2 ** exponent) + random.uniform(0, 0.5))
+
+
 def record_progress(path: Path, event: dict) -> bool:
     """Attempt journaling; report an I/O failure without aborting recovery state."""
     try:
@@ -277,6 +289,8 @@ def main(argv=None):
     parser.add_argument("--max-failures", type=int, metavar="N",
                         help="Stop after N failed files and retain the remaining retry list")
     parser.add_argument("--backoff", type=float, default=2.0)
+    parser.add_argument("--max-backoff", type=float, default=60.0, metavar="SECONDS",
+                        help="Maximum wait between retries, including jitter (default: 60)")
     parser.add_argument("--file-timeout", type=float, metavar="SECONDS",
                         help="Maximum wall-clock seconds per yt-dlp attempt")
     parser.add_argument("--limit-rate", metavar="RATE",
@@ -307,8 +321,12 @@ def main(argv=None):
     parser.add_argument("--verify-only", action="store_true",
                         help="Audit local files and optional checksums without network access")
     args = parser.parse_args(argv)
-    if args.retries < 1 or args.backoff < 0:
-        parser.error("--retries must be >= 1 and --backoff must be >= 0")
+    if args.retries < 1:
+        parser.error("--retries must be >= 1")
+    if not math.isfinite(args.backoff) or args.backoff < 0:
+        parser.error("--backoff must be a finite non-negative number")
+    if not math.isfinite(args.max_backoff) or args.max_backoff <= 0:
+        parser.error("--max-backoff must be a finite positive number")
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be >= 1")
     if args.offset < 0:
@@ -518,7 +536,7 @@ def main(argv=None):
                                 raise ValueError("Symlink introduced during download")
                             temporary.unlink(missing_ok=True)
                             if attempt + 1 < args.retries:
-                                time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
+                                time.sleep(retry_delay(args.backoff, attempt, args.max_backoff))
                             continue
                         if temporary.is_symlink() or partial.is_symlink() or target.is_symlink():
                             raise ValueError("Symlink introduced during download")
@@ -545,7 +563,7 @@ def main(argv=None):
                             # Retain the resumable .part file produced by yt-dlp.
                             temporary.unlink(missing_ok=True)
                         if attempt + 1 < args.retries:
-                            time.sleep(args.backoff * (2 ** attempt) + random.uniform(0, 0.5))
+                            time.sleep(retry_delay(args.backoff, attempt, args.max_backoff))
                     if success:
                         status = "downloaded"
                         print(f"OK   {name}")
